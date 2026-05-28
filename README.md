@@ -42,6 +42,131 @@ This repository currently supports two external data-fetching modes:
    - Default backend in this repo: Digital Earth Sweden (`https://openeo.digitalearth.se`)
    - Purpose: Query/download Sentinel-2 (`s2_msi_l2a`) for filtered temporal and spatial extents.
 
+3. **ERA5 single-levels cloud cover via CDS API** (used by extended S2 profile)
+   - Function: `download_era5_cloud()` in `scripts/download_era5.py`
+   - Backend/service: Copernicus Climate Data Store (`reanalysis-era5-single-levels`)
+   - Purpose: Provides `total_cloud_cover` / `low_cloud_cover` (not available in
+     ERA5-Land), sampled at the satellite overpass hour.
+   - Triggered automatically by `download_period()` when active rules reference
+     `tcc_*` or `lcc_*` metric columns.
+
+---
+
+## Extended Filter Configuration
+
+The shipped `filters/metafilter.json` is preserved verbatim and continues to
+work without changes. Two additional profiles ship in `filters/`:
+
+| Profile | Sensor | What it adds beyond the legacy `temp + precip` filter |
+|---|---|---|
+| `filters/metafilter.json` | sentinel-2 | (unchanged baseline) |
+| `filters/sentinel2_extended.json` | sentinel-2 | overpass-time cloud cover, daily insolation, multi-window precip lookback (24h, 48h, 7d, 30d), 30-day GDD + rootzone moisture context |
+| `filters/sentinel1_default.json` | sentinel-1 | pass-time skin-temperature, snow depth, dry-canopy gate, soil-moisture stability |
+
+### Filter JSON schema
+
+The loader accepts two equivalent shapes; the legacy flat dict is normalized to
+the new `{sensor, overpass_time_utc, rules}` shape internally.
+
+**Legacy (still supported):**
+
+```json
+{
+  "temperature":   { "metric_column": "mean_temp_c",    "operator": "gt", "threshold": 15.0 },
+  "precipitation": { "metric_column": "total_precip_mm","operator": "lt", "threshold": 1.0  }
+}
+```
+
+**New form:**
+
+```json
+{
+  "sensor": "sentinel-2",
+  "overpass_time_utc": "10:30",
+  "rules": {
+    "rule_name": {
+      "metric_column": "<column from calculate_daily_metrics>",
+      "operator":      "gt | ge | lt | le | between | abs_lt",
+      "threshold":     "<scalar, or [low, high] for 'between'>",
+      "unit":          "optional, used in error messages and reports",
+      "description":   "optional, surfaced in driver-plot legend + summaries"
+    }
+  }
+}
+```
+
+The default `overpass_time_utc` is `10:30` for `sensor: sentinel-2` (descending
+pass over Sweden) and `05:30` for `sensor: sentinel-1` (descending pass).
+Override it when sampling the ascending S1 pass (`"17:00"`).
+
+### Comparison operators
+
+| Operator | Threshold | Semantics |
+|---|---|---|
+| `gt`, `ge`, `lt`, `le` | scalar | classic comparisons |
+| `between` | `[low, high]` (inclusive on both ends) | range check, e.g. precipitation climatology band |
+| `abs_lt` | scalar | absolute value, e.g. day-to-day soil-moisture stability |
+
+### Available metric columns
+
+`calculate_daily_metrics()` produces a superset of columns from a single
+ERA5-Land NetCDF (plus optionally an ERA5 single-levels cloud file). Rules
+reference whichever column they need; unused columns cost nothing.
+
+| Column | Source variable(s) | Notes |
+|---|---|---|
+| `mean_temp_c`, `min_temp_c`, `max_temp_c` | `t2m` | Existing column kept verbatim |
+| `freeze_flag` | `t2m` | 1 if daily minimum < 0 °C |
+| `total_precip_mm` | `tp` | Existing |
+| `precip_prev24h_mm`, `precip_prev48h_mm` | `tp` | Short lookbacks |
+| `precip_prev7d_mm`, `precip_prev30d_mm` | `tp` | Long lookbacks — needs buffer month (auto-fetched by `download_period()`) |
+| `dry_streak_days` | `tp` | Consecutive dry days ending yesterday |
+| `ssrd_mj_m2` | `ssrd` | Daily insolation in MJ/m² |
+| `ssrd_prev30d_mj_m2` | `ssrd` | 30-day rolling insolation |
+| `gdd_prev30d_c` | `t2m` (base 5 °C) | 30-day accumulated growing degree days |
+| `skt_mean_c`, `skt_min_c`, `skt_at_pass_c` | `skt` | Pass-time sampling uses `overpass_time_utc` |
+| `stl1_mean_c` | `stl1` | Soil temperature layer 1 |
+| `swvl1_mean`, `swvl1_delta_prev2d`, `swvl1_prev30d_mean` | `swvl1` | Surface soil moisture + 2-day delta + 30-day baseline |
+| `snow_depth_mean_m` | `sd` | Daily mean snow depth |
+| `tcc_mean_overpass`, `lcc_mean_overpass` | `tcc`, `lcc` from ERA5 single-levels | Sampled at `overpass_time_utc` |
+
+### Auto-fetching dependent inputs
+
+For convenience the new `download_period(year, month, filter_path)` helper in
+`scripts/download_era5.py` inspects the chosen filter profile and decides which
+CDS retrieves to issue:
+
+* Always fetches the primary month from `reanalysis-era5-land`.
+* Prepends the previous month when any active rule needs ≥7-day trailing data
+  (otherwise the first ~30 days of the primary month produce NaN in the
+  rolling lookback columns).
+* Adds an `reanalysis-era5-single-levels` retrieve for cloud cover when any
+  active rule references `tcc_*` / `lcc_*` columns.
+
+The returned paths (`{"land": [...], "cloud": [...]}`) can be passed directly
+to `calculate_daily_metrics(file_path=..., cloud_file_path=...)` — both
+parameters accept a list and concatenate along time.
+
+---
+
+## Tests
+
+Synthetic NetCDF fixtures (see `tests/conftest.py`) let the rule engine and
+derived-column logic be exercised without ECMWF access. Run:
+
+```bash
+python -m pytest tests/
+```
+
+The suite covers:
+
+* All comparison operators including `between` and `abs_lt`
+* Legacy + new filter file formats
+* Derived columns (short + long lookbacks, freeze flag, dry streak, GDD, etc.)
+* Pass-time sampling against synthetic diurnal cycles
+* Buffer-month concatenation
+* End-to-end runs of all three shipped profiles against fixture data
+
 ---
 
 ## Installation and Setup
@@ -228,7 +353,16 @@ When reading `error_days`, keep in mind that the baseline currently queries ever
 │   ├── search_sentinel.py     # Queries/downloads Sentinel-2 data via openEO
 │   └── visualize.py           # Legacy footprint visualization helper
 ├── filters/                   # Stores JSON filters used in the processing
-│   └── metafilter.json        # An example metadata filter JSON
+│   ├── metafilter.json              # Baseline filter (sentinel-2, temp + precip)
+│   ├── sentinel2_extended.json      # S2 with cloud cover + long-window context
+│   └── sentinel1_default.json       # S1 with pass-time surface state filters
+├── tests/                     # Test suite (synthetic NetCDF fixtures, no CDS access required)
+│   ├── conftest.py                  # Shared fixtures, fake credentials, NetCDF builders
+│   ├── test_operators.py            # gt / ge / lt / le / between / abs_lt
+│   ├── test_loader.py               # Legacy + new schema normalization
+│   ├── test_derived_columns.py      # Short / long lookbacks, pass-time sampling
+│   ├── test_download_helpers.py     # cloud_vars_needed, long_lookback_needed
+│   └── test_integration.py          # End-to-end NetCDF → filter → date list
 └── utils/                     # Utility scripts and configurations
     └── config.py              # Configuration file for API credentials and settings
 ```
