@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import xarray as xr
 
@@ -24,6 +25,14 @@ COMPARISON_OPERATORS = {
         "apply": lambda series, threshold: series <= threshold,
         "symbol": "<=",
     },
+    "between": {
+        "apply": lambda series, threshold: (series >= threshold[0]) & (series <= threshold[1]),
+        "symbol": "in",
+    },
+    "abs_lt": {
+        "apply": lambda series, threshold: series.abs() < threshold,
+        "symbol": "|x| <",
+    },
 }
 
 LEGACY_RULE_DEFAULTS = {
@@ -37,6 +46,11 @@ LEGACY_RULE_DEFAULTS = {
         "operator": "lt",
         "name": "Daily total precipitation",
     },
+}
+
+DEFAULT_OVERPASS_TIME_UTC = {
+    "sentinel-2": "10:30",
+    "sentinel-1": "05:30",
 }
 
 
@@ -57,7 +71,33 @@ class MetafilterSelectionError(MetafilterError):
 
 def load_metafilter_parameters(json_file):
     with open(json_file, "r") as file:
-        return json.load(file)
+        payload = json.load(file)
+    return _normalize_metafilter_payload(payload)
+
+
+def _normalize_metafilter_payload(payload):
+    """Normalize both legacy (flat dict of rules) and new ({sensor, rules}) formats.
+
+    Returns the new format every time, so downstream code only handles one shape.
+    Legacy format is detected by absence of a top-level "rules" key.
+    """
+    if "rules" in payload:
+        sensor = payload.get("sensor", "sentinel-2")
+        overpass = payload.get(
+            "overpass_time_utc",
+            DEFAULT_OVERPASS_TIME_UTC.get(sensor, "10:30"),
+        )
+        return {
+            "sensor": sensor,
+            "overpass_time_utc": overpass,
+            "rules": payload["rules"],
+        }
+    # Legacy: flat dict — every key is a rule. Treat as sentinel-2.
+    return {
+        "sensor": "sentinel-2",
+        "overpass_time_utc": DEFAULT_OVERPASS_TIME_UTC["sentinel-2"],
+        "rules": payload,
+    }
 
 
 def subset_dataset_to_area(dataset, area):
@@ -77,44 +117,220 @@ def subset_dataset_to_area(dataset, area):
     return dataset.sel(latitude=latitude_slice, longitude=longitude_slice)
 
 
-def calculate_daily_metrics(file_path, area=AREA):
-    dataset = xr.open_dataset(file_path)
-    if "valid_time" in dataset.coords or "valid_time" in dataset.dims:
-        dataset = dataset.rename({"valid_time": "time"})
+def _open_and_concat(file_paths):
+    """Open one or more NetCDF files and concatenate along the time dimension.
 
+    Used to stitch a buffer month onto the primary month so long lookback
+    windows (7d, 30d) can reach back beyond the start of the primary month.
+    """
+    if isinstance(file_paths, (str, Path)):
+        file_paths = [file_paths]
+
+    datasets = []
+    for path in file_paths:
+        ds = xr.open_dataset(path)
+        if "valid_time" in ds.coords or "valid_time" in ds.dims:
+            ds = ds.rename({"valid_time": "time"})
+        datasets.append(ds)
+
+    if len(datasets) == 1:
+        return datasets[0]
+    combined = xr.concat(datasets, dim="time")
+    return combined.sortby("time").drop_duplicates(dim="time")
+
+
+def _sample_at_overpass(var, overpass_time_utc, spatial_dims):
+    """Sample an hourly variable at the closest hourly slot to overpass_time_utc.
+
+    overpass_time_utc: 'HH:MM' string. Rounded to nearest hour.
+    If no matching hourly slot exists (e.g. coarser data), fall back to daily mean.
+    """
+    hour = int(overpass_time_utc.split(":")[0])
+    minute = int(overpass_time_utc.split(":")[1])
+    if minute >= 30:
+        hour = (hour + 1) % 24
+
+    times = pd.to_datetime(var["time"].values)
+    mask = times.hour == hour
+    if not mask.any():
+        return var.resample(time="1D").mean().mean(dim=spatial_dims, skipna=True).values
+
+    sampled = var.isel(time=mask)
+    daily = sampled.resample(time="1D").mean()
+    if spatial_dims:
+        daily = daily.mean(dim=spatial_dims, skipna=True)
+    return daily.values
+
+
+def calculate_daily_metrics(
+    file_path,
+    area=AREA,
+    *,
+    sensor="sentinel-2",
+    overpass_time_utc=None,
+    cloud_file_path=None,
+):
+    """Compute daily aggregates for surface state and (optionally) cloud cover.
+
+    Args:
+        file_path: path to an ERA5-Land NetCDF, OR a list of paths (primary + buffer).
+        area: AOI dict with west/east/south/north.
+        sensor: 'sentinel-2' or 'sentinel-1' — currently only changes default overpass time.
+        overpass_time_utc: 'HH:MM'. Defaults from sensor when omitted.
+        cloud_file_path: path (or list) to ERA5 single-levels NetCDF with tcc/lcc.
+            Required only if active rules reference cloud columns.
+
+    Returns:
+        pd.DataFrame indexed by 'date' with all derivable columns. Columns whose
+        source variables are absent from the NetCDF are silently skipped.
+    """
+    if overpass_time_utc is None:
+        overpass_time_utc = DEFAULT_OVERPASS_TIME_UTC.get(sensor, "10:30")
+
+    dataset = _open_and_concat(file_path)
     dataset = subset_dataset_to_area(dataset, area)
     if dataset.sizes.get("latitude", 0) == 0 or dataset.sizes.get("longitude", 0) == 0:
         raise MetafilterSelectionError("Configured AREA does not overlap the ERA5 dataset.")
 
-    temperature_c = dataset["t2m"] - 273.15
-    precipitation_mm = dataset["tp"] * 1000.0
+    spatial = tuple(d for d in ("latitude", "longitude") if d in dataset.dims)
 
-    spatial_dims = tuple(
-        dimension
-        for dimension in ("latitude", "longitude")
-        if dimension in temperature_c.dims
+    daily_time_index = pd.to_datetime(
+        dataset["time"].resample(time="1D").mean()["time"].values
     )
+    df = pd.DataFrame({"date": daily_time_index.strftime("%Y-%m-%d")})
 
-    daily_mean_temp = temperature_c.resample(time="1D").mean()
-    daily_total_precip = precipitation_mm.resample(time="1D").sum()
+    # ── Temperature ────────────────────────────────────────────────────
+    if "t2m" in dataset:
+        t_c = dataset["t2m"] - 273.15
+        df["mean_temp_c"] = (
+            t_c.resample(time="1D").mean().mean(dim=spatial, skipna=True).values
+        )
+        df["min_temp_c"] = (
+            t_c.resample(time="1D").min().mean(dim=spatial, skipna=True).values
+        )
+        df["max_temp_c"] = (
+            t_c.resample(time="1D").max().mean(dim=spatial, skipna=True).values
+        )
+        df["freeze_flag"] = (df["min_temp_c"] < 0).astype(int)
 
-    if spatial_dims:
-        daily_mean_temp = daily_mean_temp.mean(dim=spatial_dims, skipna=True)
-        daily_total_precip = daily_total_precip.mean(dim=spatial_dims, skipna=True)
+    # ── Precipitation + lookbacks ─────────────────────────────────────
+    if "tp" in dataset:
+        precip = (dataset["tp"] * 1000.0).resample(time="1D").sum().mean(
+            dim=spatial, skipna=True
+        )
+        df["total_precip_mm"] = precip.values
+        # Short lookbacks
+        df["precip_prev24h_mm"] = (
+            pd.Series(df["total_precip_mm"]).shift(1).fillna(0).values
+        )
+        df["precip_prev48h_mm"] = (
+            pd.Series(df["total_precip_mm"])
+            .rolling(2, min_periods=1)
+            .sum()
+            .shift(1)
+            .fillna(0)
+            .values
+        )
+        # Long lookbacks — phenological + atmospheric context
+        df["precip_prev7d_mm"] = (
+            pd.Series(df["total_precip_mm"])
+            .rolling(7, min_periods=7)
+            .sum()
+            .shift(1)
+            .values
+        )
+        df["precip_prev30d_mm"] = (
+            pd.Series(df["total_precip_mm"])
+            .rolling(30, min_periods=30)
+            .sum()
+            .shift(1)
+            .values
+        )
+        # Dry streak: consecutive dry days ending yesterday
+        precip_prev = pd.Series(df["total_precip_mm"]).shift(1).fillna(0)
+        is_wet = (precip_prev >= 0.5).astype(int)
+        df["dry_streak_days"] = is_wet.groupby(is_wet.cumsum()).cumcount().values
 
-    return pd.DataFrame(
-        {
-            "date": pd.to_datetime(daily_mean_temp["time"].values).strftime("%Y-%m-%d"),
-            "mean_temp_c": daily_mean_temp.values,
-            "total_precip_mm": daily_total_precip.values,
-        }
-    )
+    # ── Solar radiation ───────────────────────────────────────────────
+    if "ssrd" in dataset:
+        ssrd_daily_mj = (
+            dataset["ssrd"].resample(time="1D").sum().mean(dim=spatial, skipna=True).values
+            / 1e6
+        )
+        df["ssrd_mj_m2"] = ssrd_daily_mj
+        df["ssrd_prev30d_mj_m2"] = (
+            pd.Series(ssrd_daily_mj).rolling(30, min_periods=30).sum().shift(1).values
+        )
+
+    # ── GDD accumulation (requires mean_temp_c) ───────────────────────
+    if "mean_temp_c" in df.columns:
+        gdd_daily = (df["mean_temp_c"].clip(lower=5) - 5).fillna(0)
+        df["gdd_prev30d_c"] = (
+            gdd_daily.rolling(30, min_periods=30).sum().shift(1).values
+        )
+
+    # ── Surface state (S1-relevant, but cheap to always compute) ──────
+    if "skt" in dataset:
+        skt_c = dataset["skt"] - 273.15
+        df["skt_mean_c"] = (
+            skt_c.resample(time="1D").mean().mean(dim=spatial, skipna=True).values
+        )
+        df["skt_min_c"] = (
+            skt_c.resample(time="1D").min().mean(dim=spatial, skipna=True).values
+        )
+        df["skt_at_pass_c"] = _sample_at_overpass(skt_c, overpass_time_utc, spatial)
+
+    if "stl1" in dataset:
+        stl1_c = dataset["stl1"] - 273.15
+        df["stl1_mean_c"] = (
+            stl1_c.resample(time="1D").mean().mean(dim=spatial, skipna=True).values
+        )
+
+    if "swvl1" in dataset:
+        swvl1_daily = (
+            dataset["swvl1"].resample(time="1D").mean().mean(dim=spatial, skipna=True).values
+        )
+        df["swvl1_mean"] = swvl1_daily
+        df["swvl1_delta_prev2d"] = (
+            pd.Series(swvl1_daily) - pd.Series(swvl1_daily).shift(2)
+        ).fillna(0).values
+        df["swvl1_prev30d_mean"] = (
+            pd.Series(swvl1_daily).rolling(30, min_periods=30).mean().shift(1).values
+        )
+
+    if "sd" in dataset:  # snow_depth in metres
+        df["snow_depth_mean_m"] = (
+            dataset["sd"].resample(time="1D").mean().mean(dim=spatial, skipna=True).values
+        )
+
+    # ── Cloud cover (separate ERA5 single-levels file) ────────────────
+    if cloud_file_path is not None:
+        cds = _open_and_concat(cloud_file_path)
+        cds = subset_dataset_to_area(cds, area)
+        cspatial = tuple(d for d in ("latitude", "longitude") if d in cds.dims)
+        if "tcc" in cds:
+            df["tcc_mean_overpass"] = _sample_at_overpass(
+                cds["tcc"], overpass_time_utc, cspatial
+            )
+        if "lcc" in cds:
+            df["lcc_mean_overpass"] = _sample_at_overpass(
+                cds["lcc"], overpass_time_utc, cspatial
+            )
+
+    return df
 
 
 def normalize_metafilter_rules(metafilter_params):
-    normalized_rules = []
+    """Validate + flatten the rule list. Accepts either the new {sensor, rules}
+    form or the legacy flat form (already normalized by load_metafilter_parameters,
+    but kept for direct callers passing raw dicts)."""
+    if "rules" in metafilter_params:
+        rules_dict = metafilter_params["rules"]
+    else:
+        rules_dict = metafilter_params
 
-    for rule_name, rule_config in metafilter_params.items():
+    normalized_rules = []
+    for rule_name, rule_config in rules_dict.items():
         defaults = LEGACY_RULE_DEFAULTS.get(rule_name, {})
         merged_rule = {**defaults, **rule_config}
 
@@ -136,6 +352,18 @@ def normalize_metafilter_rules(metafilter_params):
                 f"Metafilter rule '{rule_name}' has unsupported operator '{operator}'. "
                 f"Supported operators: {supported}."
             )
+
+        if operator == "between":
+            threshold = merged_rule["threshold"]
+            if not (isinstance(threshold, (list, tuple)) and len(threshold) == 2):
+                raise MetafilterConfigurationError(
+                    f"Metafilter rule '{rule_name}' uses 'between' but threshold is not "
+                    f"[low, high]; got {threshold!r}."
+                )
+            if threshold[0] > threshold[1]:
+                raise MetafilterConfigurationError(
+                    f"Metafilter rule '{rule_name}' has 'between' threshold low > high."
+                )
 
         normalized_rules.append(
             {
@@ -253,9 +481,36 @@ def format_selection_error_message(rule_summaries, total_days):
     return "\n".join(summary_lines)
 
 
-def process_era5_data(file_path, metafilter_params, area=AREA):
-    daily_metrics = calculate_daily_metrics(file_path, area=area)
-    filtered_metrics, rule_summaries = apply_metafilter(daily_metrics, metafilter_params)
+def process_era5_data(
+    file_path,
+    metafilter_params,
+    area=AREA,
+    *,
+    cloud_file_path=None,
+):
+    """End-to-end: NetCDF → daily metrics → filter application → date lists.
+
+    cloud_file_path is forwarded to calculate_daily_metrics so cloud-cover rules
+    work transparently when an ERA5 single-levels file is supplied.
+    """
+    normalized = (
+        metafilter_params
+        if "rules" in metafilter_params
+        else _normalize_metafilter_payload(metafilter_params)
+    )
+    sensor = normalized.get("sensor", "sentinel-2")
+    overpass = normalized.get(
+        "overpass_time_utc", DEFAULT_OVERPASS_TIME_UTC.get(sensor, "10:30")
+    )
+
+    daily_metrics = calculate_daily_metrics(
+        file_path,
+        area=area,
+        sensor=sensor,
+        overpass_time_utc=overpass,
+        cloud_file_path=cloud_file_path,
+    )
+    filtered_metrics, rule_summaries = apply_metafilter(daily_metrics, normalized)
 
     all_dates = filtered_metrics["date"].tolist()
     selected_dates = filtered_metrics.loc[filtered_metrics["selected"], "date"].tolist()
