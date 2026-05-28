@@ -1,0 +1,46 @@
+{
+  "sensor": "sentinel-1",
+  "overpass_time_utc": "05:30",
+  "rules": {
+    "frost_free": {
+      "name": "Frost-free surface at overpass",
+      "metric_column": "skt_at_pass_c",
+      "operator": "gt",
+      "threshold": 2.0,
+      "unit": "Celsius",
+      "description": "Avoid freeze-thaw days; the dielectric jump produces a several-dB backscatter artefact."
+    },
+    "no_diurnal_freeze": {
+      "name": "No diurnal freeze cycle",
+      "metric_column": "skt_min_c",
+      "operator": "gt",
+      "threshold": 0.0,
+      "unit": "Celsius",
+      "description": "Daily minimum above 0 — soil dielectric stable across the day."
+    },
+    "snow_free": {
+      "name": "Snow-free ground",
+      "metric_column": "snow_depth_mean_m",
+      "operator": "lt",
+      "threshold": 0.02,
+      "unit": "m",
+      "description": "Snow cover invalidates vegetation backscatter interpretation."
+    },
+    "dry_canopy": {
+      "name": "Dry vegetation canopy",
+      "metric_column": "precip_prev24h_mm",
+      "operator": "lt",
+      "threshold": 1.0,
+      "unit": "mm",
+      "description": "Wet canopy adds 0.5–1 dB noise to crop backscatter time series."
+    },
+    "stable_soil_moisture": {
+      "name": "Stable surface soil moisture",
+      "metric_column": "swvl1_delta_prev2d",
+      "operator": "abs_lt",
+      "threshold": 0.05,
+      "unit": "m^3/m^3",
+      "description": "Sudden swvl1 change — unstable backscatter baseline."
+    }
+  }
+}
