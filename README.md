@@ -50,23 +50,52 @@ This repository currently supports two external data-fetching modes:
    - Triggered automatically by `download_period()` when active rules reference
      `tcc_*` or `lcc_*` metric columns.
 
+4. **ERA5 archive via Open-Meteo Historical API** (alternative backend, no auth)
+   - Script: `scripts/download_open_meteo.py`
+   - Backend/service: Open-Meteo Historical Archive (`https://archive-api.open-meteo.com/v1/archive`)
+   - Purpose: Same ERA5 reanalysis data as paths 1 + 3, returned as JSON for a
+     single point snapped to the ~0.25° ERA5 cell of the AOI centroid. Cloud
+     cover comes in the same response, so no separate retrieve is needed.
+   - Selected via `"backend": "open-meteo"` in the filter profile.
+   - The adapter writes a NetCDF with the same variable names and shape as a
+     CDS-side ERA5-Land file, so downstream `calculate_daily_metrics()`
+     consumes both backends through one code path.
+
 ---
 
 ## Extended Filter Configuration
 
 The shipped `filters/metafilter.json` is preserved verbatim and continues to
-work without changes. Two additional profiles ship in `filters/`:
+work without changes. Three additional profiles ship in `filters/`:
 
-| Profile | Sensor | What it adds beyond the legacy `temp + precip` filter |
-|---|---|---|
-| `filters/metafilter.json` | sentinel-2 | (unchanged baseline) |
-| `filters/sentinel2_extended.json` | sentinel-2 | overpass-time cloud cover, daily insolation, multi-window precip lookback (24h, 48h, 7d, 30d), 30-day GDD + rootzone moisture context |
-| `filters/sentinel1_default.json` | sentinel-1 | pass-time skin-temperature, snow depth, dry-canopy gate, soil-moisture stability |
+| Profile | Sensor | Backend | What it adds beyond the legacy `temp + precip` filter |
+|---|---|---|---|
+| `filters/metafilter.json` | sentinel-2 | cds | (unchanged baseline) |
+| `filters/sentinel2_extended.json` | sentinel-2 | cds | overpass-time cloud cover, daily insolation, multi-window precip lookback (24h, 48h, 7d, 30d), 30-day GDD + rootzone moisture context |
+| `filters/sentinel1_default.json` | sentinel-1 | cds | pass-time skin-temperature, snow depth, dry-canopy gate, soil-moisture stability |
+| `filters/sentinel2_openmeteo.json` | sentinel-2 | open-meteo | same rules as `sentinel2_extended.json`, but data source is Open-Meteo's Historical Archive (no CDS auth/quota; one HTTP call covers land + cloud) |
+
+### Choosing a data backend
+
+Two ERA5 sources are supported, picked via an optional `backend` field in the
+filter profile JSON. Both produce data that `calculate_daily_metrics()`
+consumes through the same code path.
+
+| Backend | Selected via | Auth | Quota | Spatial resolution | Cloud cover |
+|---|---|---|---|---|---|
+| `cds` (default) | absence of `backend` field, or `"backend": "cds"` | requires `.cdsapirc` | per-account CDS quota | full bbox at 0.1° (ERA5-Land); 0.25° for `reanalysis-era5-single-levels` cloud retrieve | separate `reanalysis-era5-single-levels` retrieve, auto-triggered when rules reference `tcc_*`/`lcc_*` |
+| `open-meteo` | `"backend": "open-meteo"` in profile | none | generous rate limits (no per-user quota) | single point snapped to 0.25° ERA5 cell centroid | bundled in the same hourly response |
+
+`download_period(year, month, filter_path)` reads the `backend` field and
+dispatches to the right script (`scripts/download_era5.py` for CDS,
+`scripts/download_open_meteo.py` for Open-Meteo). The returned NetCDF paths
+are identical in shape and variable naming, so callers don't need to know
+which backend was used.
 
 ### Filter JSON schema
 
 The loader accepts two equivalent shapes; the legacy flat dict is normalized to
-the new `{sensor, overpass_time_utc, rules}` shape internally.
+the new `{sensor, overpass_time_utc, backend, rules}` shape internally.
 
 **Legacy (still supported):**
 
@@ -362,14 +391,16 @@ When reading `error_days`, keep in mind that the baseline currently queries ever
 │   └── visualize.py           # Legacy footprint visualization helper
 ├── filters/                   # Stores JSON filters used in the processing
 │   ├── metafilter.json              # Baseline filter (sentinel-2, temp + precip)
-│   ├── sentinel2_extended.json      # S2 with cloud cover + long-window context
-│   └── sentinel1_default.json       # S1 with pass-time surface state filters
-├── tests/                     # Test suite (synthetic NetCDF fixtures, no CDS access required)
+│   ├── sentinel2_extended.json      # S2 with cloud cover + long-window context (CDS backend)
+│   ├── sentinel1_default.json       # S1 with pass-time surface state filters (CDS backend)
+│   └── sentinel2_openmeteo.json     # Same rules as extended, served via Open-Meteo
+├── tests/                     # Test suite (synthetic fixtures, no network access required)
 │   ├── conftest.py                  # Shared fixtures, fake credentials, NetCDF builders
 │   ├── test_operators.py            # gt / ge / lt / le / between / abs_lt
 │   ├── test_loader.py               # Legacy + new schema normalization
 │   ├── test_derived_columns.py      # Short / long lookbacks, pass-time sampling
 │   ├── test_download_helpers.py     # cloud_vars_needed, long_lookback_needed
+│   ├── test_open_meteo_backend.py   # Open-Meteo JSON → xarray + backend dispatch
 │   └── test_integration.py          # End-to-end NetCDF → filter → date list
 └── utils/                     # Utility scripts and configurations
     └── config.py              # Configuration file for API credentials and settings
