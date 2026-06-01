@@ -79,7 +79,10 @@ def _normalize_metafilter_payload(payload):
     """Normalize both legacy (flat dict of rules) and new ({sensor, rules}) formats.
 
     Returns the new format every time, so downstream code only handles one shape.
-    Legacy format is detected by absence of a top-level "rules" key.
+    Legacy format is detected by absence of a top-level "rules" key. The optional
+    `backend` field (cds | open-meteo) is preserved when present and defaulted
+    to "cds" otherwise — the value is consumed by scripts/download_era5.py to
+    pick the data source, not by the rule engine itself.
     """
     if "rules" in payload:
         sensor = payload.get("sensor", "sentinel-2")
@@ -90,12 +93,14 @@ def _normalize_metafilter_payload(payload):
         return {
             "sensor": sensor,
             "overpass_time_utc": overpass,
+            "backend": payload.get("backend", "cds"),
             "rules": payload["rules"],
         }
     # Legacy: flat dict — every key is a rule. Treat as sentinel-2.
     return {
         "sensor": "sentinel-2",
         "overpass_time_utc": DEFAULT_OVERPASS_TIME_UTC["sentinel-2"],
+        "backend": "cds",
         "rules": payload,
     }
 
@@ -301,6 +306,19 @@ def calculate_daily_metrics(
     if "sd" in dataset:  # snow_depth in metres
         df["snow_depth_mean_m"] = (
             dataset["sd"].resample(time="1D").mean().mean(dim=spatial, skipna=True).values
+        )
+
+    # ── Cloud cover when present in the same dataset ──────────────────
+    # The CDS path delivers tcc/lcc in a separate `reanalysis-era5-single-levels`
+    # NetCDF (handled below). The Open-Meteo path bundles them in the same JSON
+    # response → the variables live on `dataset` directly. We detect both shapes.
+    if "tcc" in dataset:
+        df["tcc_mean_overpass"] = _sample_at_overpass(
+            dataset["tcc"], overpass_time_utc, spatial
+        )
+    if "lcc" in dataset:
+        df["lcc_mean_overpass"] = _sample_at_overpass(
+            dataset["lcc"], overpass_time_utc, spatial
         )
 
     # ── Cloud cover (separate ERA5 single-levels file) ────────────────
