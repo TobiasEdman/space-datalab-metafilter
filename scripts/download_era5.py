@@ -109,11 +109,27 @@ def _maybe_extract_zipped_netcdf(path):
     return path
 
 
+def _load_filter_cfg(filter_path):
+    """Return the raw filter file as a dict (may be legacy flat or new schema)."""
+    with open(filter_path, "r") as f:
+        return json.load(f)
+
+
 def _rules_from_filter(filter_path):
     """Return the dict of rule_name → rule_config regardless of file format."""
-    with open(filter_path, "r") as f:
-        cfg = json.load(f)
+    cfg = _load_filter_cfg(filter_path)
     return cfg.get("rules", cfg)
+
+
+def backend_for_filter(filter_path, default="cds"):
+    """Return the requested backend ('cds' | 'open-meteo'), defaulting to CDS.
+
+    The backend selector lives on the filter profile so the JSON is the single
+    source of truth for both *what* to filter and *where* the source data
+    comes from. Legacy flat filters have no `backend` field → CDS.
+    """
+    cfg = _load_filter_cfg(filter_path)
+    return cfg.get("backend", default)
 
 
 def cloud_vars_needed(filter_path):
