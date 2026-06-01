@@ -51,11 +51,27 @@ _LONG_LOOKBACK_PREFIXES = (
 )
 
 
+def _load_filter_cfg(filter_path):
+    """Return the raw filter file as a dict (may be legacy flat or new schema)."""
+    with open(filter_path, "r") as f:
+        return json.load(f)
+
+
 def _rules_from_filter(filter_path):
     """Return the dict of rule_name → rule_config regardless of file format."""
-    with open(filter_path, "r") as f:
-        cfg = json.load(f)
+    cfg = _load_filter_cfg(filter_path)
     return cfg.get("rules", cfg)
+
+
+def backend_for_filter(filter_path, default="cds"):
+    """Return the requested backend ('cds' | 'open-meteo'), defaulting to CDS.
+
+    The backend selector lives on the filter profile so the JSON is the single
+    source of truth for both *what* to filter and *where* the source data
+    comes from. Legacy flat filters have no `backend` field → CDS.
+    """
+    cfg = _load_filter_cfg(filter_path)
+    return cfg.get("backend", default)
 
 
 def cloud_vars_needed(filter_path):
@@ -139,14 +155,19 @@ def download_era5_cloud(year, month, area=None):
 def download_period(year, month, filter_path, area=None, variables=None):
     """Fetch primary month + optional buffer month + optional cloud data.
 
-    Inspects the active filter profile and:
-      - prepends the previous month to the fetch list when any rule needs
-        ≥7-day trailing data (otherwise the first ~30 days of the primary
-        month produce NaN in the rolling lookback columns).
-      - also fetches ERA5 single-levels cloud cover when any rule references
-        tcc_/lcc_ columns.
+    Inspects the active filter profile and dispatches to the requested backend:
 
-    Returns a dict {"land": [paths…], "cloud": [paths…]}. Either list can
+      - `backend: "cds"` (default) — issue `reanalysis-era5-land` retrieves,
+        plus `reanalysis-era5-single-levels` when any rule needs cloud cover.
+      - `backend: "open-meteo"` — single HTTP call per month against the
+        Historical Archive; cloud cover comes in the same response so the
+        returned `cloud` list is empty (signal lives in the land NetCDF).
+
+    In both cases, prepends the previous month when any active rule needs
+    ≥7-day trailing data so rolling-window columns resolve on the first day
+    of the requested month.
+
+    Returns a dict `{"land": [paths…], "cloud": [paths…]}`. Either list can
     have one or two entries depending on buffer + cloud needs.
 
     The returned land/cloud path lists are designed to be passed directly to
@@ -156,6 +177,22 @@ def download_period(year, month, filter_path, area=None, variables=None):
     months_to_fetch = [(year, month)]
     if long_lookback_needed(filter_path):
         months_to_fetch.insert(0, _previous_month(year, month))
+
+    backend = backend_for_filter(filter_path)
+    if backend == "open-meteo":
+        # Open-Meteo response includes cloud cover; no separate retrieval.
+        from scripts.download_open_meteo import download_open_meteo_land
+        land_paths = [
+            download_open_meteo_land(y, m, area=area, variables=variables)
+            for y, m in months_to_fetch
+        ]
+        return {"land": land_paths, "cloud": []}
+
+    if backend != "cds":
+        raise ValueError(
+            f"Unknown backend {backend!r} in filter {filter_path!r}; "
+            f"supported: 'cds', 'open-meteo'."
+        )
 
     land_paths = [
         download_era5_land(y, m, variables=variables, area=area)
