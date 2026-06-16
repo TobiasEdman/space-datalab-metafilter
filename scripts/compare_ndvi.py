@@ -27,6 +27,11 @@ def _get_openeo_connect():
 
 
 def authenticate(username, password, eo_service_url):
+    if not username or not password:
+        raise EnvironmentError(
+            "OpenEO credentials must be set via OPENEO_USERNAME and OPENEO_PASSWORD "
+            "before authenticating against the openEO backend."
+        )
     print_info(f"Connecting to openEO backend: {eo_service_url}")
     connect = _get_openeo_connect()
     connection = connect(eo_service_url)
