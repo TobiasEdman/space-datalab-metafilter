@@ -1,17 +1,27 @@
-utils
-cdsapi
-xarray
-numpy
-pandas
-matplotlib
-openeo
-sentinelsat
-rasterio
-geopandas
-requests
-h5netcdf
-netCDF4
-folium
-geopandas
-shapely
-python-dotenv
+# Pinned dependencies for the metafilter pipeline.
+#
+# The previous `utils` line resolved to a tiny unrelated PyPI package (the
+# local utils/ folder is a sub-module of this repo, not a dependency) and was
+# removed. cftime was added explicitly because xarray needs it to decode the
+# time dimension on CDS-generated NetCDFs, and pip does not pull it
+# transitively through xarray.
+#
+# Versions verified working with Python 3.12 on Linux/macOS as of 2026-06.
+
+cdsapi==0.7.4
+xarray==2024.10.0
+numpy==2.1.3
+pandas==2.2.3
+scipy==1.14.1
+netCDF4==1.7.2
+h5netcdf==1.4.1
+cftime==1.6.4
+matplotlib==3.9.2
+requests==2.32.3
+python-dotenv==1.0.1
+openeo==0.34.0
+sentinelsat==1.2.1
+rasterio==1.4.3
+geopandas==1.0.1
+shapely==2.0.6
+folium==0.18.0
