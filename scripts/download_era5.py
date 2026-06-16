@@ -15,8 +15,22 @@ It looks at the active filter profile and decides:
 * whether to also fetch ERA5 single-levels cloud cover
 
 so that downstream NetCDF inputs match the lookback windows the filter expects.
+
+Known CDS-side quirk handled here
+---------------------------------
+The CDS API sometimes returns a *zip archive* containing the NetCDF file
+rather than the NetCDF itself, even when ``data_format: 'netcdf'`` is
+requested. The zip is written to the user-supplied path with the user-
+supplied filename — including ``.nc`` extension — so any downstream
+``xarray.open_dataset(...)`` raises the misleading error "did not find a
+match in any of xarray's currently installed IO backends". After every
+successful retrieve we therefore check the magic bytes and, if they're a
+zip header, extract the inner NetCDF in place via
+``_maybe_extract_zipped_netcdf``.
 """
 import json
+import shutil
+import zipfile
 from pathlib import Path
 
 from utils.config import AREA, OUTPUT_DIR
@@ -49,6 +63,50 @@ _LONG_LOOKBACK_PREFIXES = (
     "swvl1_prev30d_",
     "dry_streak_",
 )
+
+# ZIP local-file-header magic. Used to detect CDS responses that arrive as
+# a zip archive wrapping the NetCDF instead of the NetCDF directly.
+_ZIP_MAGIC = b"PK\x03\x04"
+
+
+def _maybe_extract_zipped_netcdf(path):
+    """If `path` is actually a zip archive (CDS quirk), extract the NetCDF
+    inside and replace the zip with the extracted file. Otherwise no-op.
+
+    Returns the path (unchanged) for chaining.
+
+    Raises RuntimeError if the file is a zip but contains zero or more than
+    one .nc member — that shape isn't documented anywhere as a CDS response
+    and indicates we should fail loudly rather than guess.
+    """
+    path = Path(path)
+    with open(path, "rb") as f:
+        magic = f.read(4)
+
+    if magic != _ZIP_MAGIC:
+        return path  # already a valid NetCDF/GRIB/etc., nothing to do
+
+    with zipfile.ZipFile(path) as zf:
+        members = zf.namelist()
+        nc_members = [m for m in members if m.lower().endswith(".nc")]
+        if not nc_members:
+            raise RuntimeError(
+                f"{path} is a zip archive but contains no .nc files "
+                f"(members: {members}). Cannot auto-extract."
+            )
+        if len(nc_members) > 1:
+            raise RuntimeError(
+                f"{path} is a zip archive with multiple .nc files "
+                f"(members: {nc_members}). Ambiguous which to extract."
+            )
+
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        with zf.open(nc_members[0]) as src, open(tmp_path, "wb") as dst:
+            shutil.copyfileobj(src, dst)
+
+    # Atomic replace, so a half-extracted file never lingers at `path`.
+    tmp_path.replace(path)
+    return path
 
 
 def _rules_from_filter(filter_path):
@@ -86,12 +144,15 @@ def download_era5_land(year=2024, month=8, variables=None, area=None):
     Defaults preserve the original main-branch behaviour: 2024-08, two variables,
     `data/era5/era5_land_<year>_<MM>.nc`. Extended call sites pass `variables`
     explicitly to fetch the wider set required by the new filter profiles.
+
+    Auto-extracts the result if CDS returned a zip-wrapped NetCDF.
     """
     import cdsapi
 
     area = area or AREA
     variables = variables or ERA5_LAND_LEGACY_VARIABLES
     out_path = f"{OUTPUT_DIR}/era5/era5_land_{year}_{month:02d}.nc"
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
 
     c = cdsapi.Client()
     c.retrieve(
@@ -108,15 +169,20 @@ def download_era5_land(year=2024, month=8, variables=None, area=None):
         },
         out_path,
     )
+    _maybe_extract_zipped_netcdf(out_path)
     return out_path
 
 
 def download_era5_cloud(year, month, area=None):
-    """Retrieve one month of ERA5 single-levels cloud cover. Returns NetCDF path."""
+    """Retrieve one month of ERA5 single-levels cloud cover. Returns NetCDF path.
+
+    Auto-extracts the result if CDS returned a zip-wrapped NetCDF.
+    """
     import cdsapi
 
     area = area or AREA
     out_path = f"{OUTPUT_DIR}/era5/era5_clouds_{year}_{month:02d}.nc"
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
 
     c = cdsapi.Client()
     c.retrieve(
@@ -133,20 +199,26 @@ def download_era5_cloud(year, month, area=None):
         },
         out_path,
     )
+    _maybe_extract_zipped_netcdf(out_path)
     return out_path
 
 
 def download_period(year, month, filter_path, area=None, variables=None):
     """Fetch primary month + optional buffer month + optional cloud data.
 
-    Inspects the active filter profile and:
-      - prepends the previous month to the fetch list when any rule needs
-        ≥7-day trailing data (otherwise the first ~30 days of the primary
-        month produce NaN in the rolling lookback columns).
-      - also fetches ERA5 single-levels cloud cover when any rule references
-        tcc_/lcc_ columns.
+    Inspects the active filter profile and dispatches to the requested backend:
 
-    Returns a dict {"land": [paths…], "cloud": [paths…]}. Either list can
+      - `backend: "cds"` (default) — issue `reanalysis-era5-land` retrieves,
+        plus `reanalysis-era5-single-levels` when any rule needs cloud cover.
+      - `backend: "open-meteo"` — single HTTP call per month against the
+        Historical Archive; cloud cover comes in the same response so the
+        returned `cloud` list is empty (signal lives in the land NetCDF).
+
+    In both cases, prepends the previous month when any active rule needs
+    ≥7-day trailing data so rolling-window columns resolve on the first day
+    of the requested month.
+
+    Returns a dict `{"land": [paths…], "cloud": [paths…]}`. Either list can
     have one or two entries depending on buffer + cloud needs.
 
     The returned land/cloud path lists are designed to be passed directly to
@@ -156,6 +228,22 @@ def download_period(year, month, filter_path, area=None, variables=None):
     months_to_fetch = [(year, month)]
     if long_lookback_needed(filter_path):
         months_to_fetch.insert(0, _previous_month(year, month))
+
+    backend = backend_for_filter(filter_path)
+    if backend == "open-meteo":
+        # Open-Meteo response includes cloud cover; no separate retrieval.
+        from scripts.download_open_meteo import download_open_meteo_land
+        land_paths = [
+            download_open_meteo_land(y, m, area=area, variables=variables)
+            for y, m in months_to_fetch
+        ]
+        return {"land": land_paths, "cloud": []}
+
+    if backend != "cds":
+        raise ValueError(
+            f"Unknown backend {backend!r} in filter {filter_path!r}; "
+            f"supported: 'cds', 'open-meteo'."
+        )
 
     land_paths = [
         download_era5_land(y, m, variables=variables, area=area)
@@ -167,6 +255,23 @@ def download_period(year, month, filter_path, area=None, variables=None):
         cloud_paths = [download_era5_cloud(y, m, area=area) for y, m in months_to_fetch]
 
     return {"land": land_paths, "cloud": cloud_paths}
+
+
+def backend_for_filter(filter_path, default="cds"):
+    """Return the requested backend ('cds' | 'open-meteo'), defaulting to CDS.
+
+    The backend selector lives on the filter profile so the JSON is the single
+    source of truth for both *what* to filter and *where* the source data
+    comes from. Legacy flat filters have no `backend` field → CDS.
+    """
+    cfg = _load_filter_cfg(filter_path)
+    return cfg.get("backend", default)
+
+
+def _load_filter_cfg(filter_path):
+    """Return the raw filter file as a dict (may be legacy flat or new schema)."""
+    with open(filter_path, "r") as f:
+        return json.load(f)
 
 
 if __name__ == "__main__":
