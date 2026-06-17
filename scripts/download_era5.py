@@ -16,21 +16,17 @@ It looks at the active filter profile and decides:
 
 so that downstream NetCDF inputs match the lookback windows the filter expects.
 
-Known CDS-side quirk handled here
----------------------------------
-The CDS API sometimes returns a *zip archive* containing the NetCDF file
-rather than the NetCDF itself, even when ``data_format: 'netcdf'`` is
-requested. The zip is written to the user-supplied path with the user-
-supplied filename — including ``.nc`` extension — so any downstream
-``xarray.open_dataset(...)`` raises the misleading error "did not find a
-match in any of xarray's currently installed IO backends". After every
-successful retrieve we therefore check the magic bytes and, if they're a
-zip header, extract the inner NetCDF in place via
-``_maybe_extract_zipped_netcdf``.
+CDS-Beta zip wrapping
+---------------------
+CDS-Beta defaults to packaging ERA5 retrieves as a zip archive containing
+the requested NetCDF, even when ``data_format: 'netcdf'`` is set. The fix
+is to explicitly request ``download_format: 'unarchived'`` in the body,
+which makes CDS skip the zip wrapping. Without that, downstream
+``xarray.open_dataset()`` raises the misleading error "did not find a
+match in any of xarray's currently installed IO backends" on the zip
+that was written under the user-supplied .nc filename.
 """
 import json
-import shutil
-import zipfile
 from pathlib import Path
 
 from utils.config import AREA, OUTPUT_DIR
@@ -64,56 +60,27 @@ _LONG_LOOKBACK_PREFIXES = (
     "dry_streak_",
 )
 
-# ZIP local-file-header magic. Used to detect CDS responses that arrive as
-# a zip archive wrapping the NetCDF instead of the NetCDF directly.
-_ZIP_MAGIC = b"PK\x03\x04"
-
-
-def _maybe_extract_zipped_netcdf(path):
-    """If `path` is actually a zip archive (CDS quirk), extract the NetCDF
-    inside and replace the zip with the extracted file. Otherwise no-op.
-
-    Returns the path (unchanged) for chaining.
-
-    Raises RuntimeError if the file is a zip but contains zero or more than
-    one .nc member — that shape isn't documented anywhere as a CDS response
-    and indicates we should fail loudly rather than guess.
-    """
-    path = Path(path)
-    with open(path, "rb") as f:
-        magic = f.read(4)
-
-    if magic != _ZIP_MAGIC:
-        return path  # already a valid NetCDF/GRIB/etc., nothing to do
-
-    with zipfile.ZipFile(path) as zf:
-        members = zf.namelist()
-        nc_members = [m for m in members if m.lower().endswith(".nc")]
-        if not nc_members:
-            raise RuntimeError(
-                f"{path} is a zip archive but contains no .nc files "
-                f"(members: {members}). Cannot auto-extract."
-            )
-        if len(nc_members) > 1:
-            raise RuntimeError(
-                f"{path} is a zip archive with multiple .nc files "
-                f"(members: {nc_members}). Ambiguous which to extract."
-            )
-
-        tmp_path = path.with_suffix(path.suffix + ".tmp")
-        with zf.open(nc_members[0]) as src, open(tmp_path, "wb") as dst:
-            shutil.copyfileobj(src, dst)
-
-    # Atomic replace, so a half-extracted file never lingers at `path`.
-    tmp_path.replace(path)
-    return path
+def _load_filter_cfg(filter_path):
+    """Return the raw filter file as a dict (may be legacy flat or new schema)."""
+    with open(filter_path, "r") as f:
+        return json.load(f)
 
 
 def _rules_from_filter(filter_path):
     """Return the dict of rule_name → rule_config regardless of file format."""
-    with open(filter_path, "r") as f:
-        cfg = json.load(f)
+    cfg = _load_filter_cfg(filter_path)
     return cfg.get("rules", cfg)
+
+
+def backend_for_filter(filter_path, default="cds"):
+    """Return the requested backend ('cds' | 'open-meteo'), defaulting to CDS.
+
+    The backend selector lives on the filter profile so the JSON is the single
+    source of truth for both *what* to filter and *where* the source data
+    comes from. Legacy flat filters have no `backend` field → CDS.
+    """
+    cfg = _load_filter_cfg(filter_path)
+    return cfg.get("backend", default)
 
 
 def cloud_vars_needed(filter_path):
@@ -144,8 +111,6 @@ def download_era5_land(year=2024, month=8, variables=None, area=None):
     Defaults preserve the original main-branch behaviour: 2024-08, two variables,
     `data/era5/era5_land_<year>_<MM>.nc`. Extended call sites pass `variables`
     explicitly to fetch the wider set required by the new filter profiles.
-
-    Auto-extracts the result if CDS returned a zip-wrapped NetCDF.
     """
     import cdsapi
 
@@ -166,18 +131,18 @@ def download_era5_land(year=2024, month=8, variables=None, area=None):
             # CDS expects [north, west, south, east].
             "area": [area["north"], area["west"], area["south"], area["east"]],
             "data_format": "netcdf",
+            # Without this, CDS-Beta wraps the NetCDF in a zip archive and
+            # writes it under the user-supplied .nc filename — confusing
+            # every downstream xarray.open_dataset() call.
+            "download_format": "unarchived",
         },
         out_path,
     )
-    _maybe_extract_zipped_netcdf(out_path)
     return out_path
 
 
 def download_era5_cloud(year, month, area=None):
-    """Retrieve one month of ERA5 single-levels cloud cover. Returns NetCDF path.
-
-    Auto-extracts the result if CDS returned a zip-wrapped NetCDF.
-    """
+    """Retrieve one month of ERA5 single-levels cloud cover. Returns NetCDF path."""
     import cdsapi
 
     area = area or AREA
@@ -196,10 +161,13 @@ def download_era5_cloud(year, month, area=None):
             "time": [f"{hour:02d}:00" for hour in range(24)],
             "area": [area["north"], area["west"], area["south"], area["east"]],
             "data_format": "netcdf",
+            # Without this, CDS-Beta wraps the NetCDF in a zip archive and
+            # writes it under the user-supplied .nc filename — confusing
+            # every downstream xarray.open_dataset() call.
+            "download_format": "unarchived",
         },
         out_path,
     )
-    _maybe_extract_zipped_netcdf(out_path)
     return out_path
 
 
