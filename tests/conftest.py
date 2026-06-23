@@ -165,3 +165,42 @@ def era5_land_factory(tmp_path):
         return write_netcdf(ds, tmp_path / f"era5_land_{counter['n']}.nc")
 
     return _build
+
+
+def make_era5_cloud_dataset(
+    *, start: str, end: str, area=None,
+    tcc_at_overpass: float = 0.10, lcc_at_overpass: float = 0.05,
+) -> xr.Dataset:
+    """Synthetic ERA5 single-levels cloud-cover dataset (tcc + lcc).
+
+    All hourly samples set to the same constant for determinism, since the
+    metafilter rule only samples one specific hour anyway.
+    """
+    if area is None:
+        area = TEST_AREA
+    times = pd.date_range(start=start, end=end, freq="h", inclusive="left")
+    lats, lons = _make_grid(area)
+    shape = (len(times), len(lats), len(lons))
+
+    return xr.Dataset(
+        {
+            "tcc": (("time", "latitude", "longitude"),
+                    np.full(shape, tcc_at_overpass, dtype=np.float32)),
+            "lcc": (("time", "latitude", "longitude"),
+                    np.full(shape, lcc_at_overpass, dtype=np.float32)),
+        },
+        coords={"time": times, "latitude": lats, "longitude": lons},
+    )
+
+
+@pytest.fixture
+def era5_cloud_factory(tmp_path):
+    """Build an ERA5 single-levels cloud NetCDF on demand; returns its path."""
+    counter = {"n": 0}
+
+    def _build(**kwargs) -> Path:
+        counter["n"] += 1
+        ds = make_era5_cloud_dataset(**kwargs)
+        return write_netcdf(ds, tmp_path / f"era5_clouds_{counter['n']}.nc")
+
+    return _build

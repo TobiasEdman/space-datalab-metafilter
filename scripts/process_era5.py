@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 from pathlib import Path
 
@@ -177,12 +179,13 @@ def subset_dataset_to_area(dataset, area):
 
 
 def calculate_daily_metrics(
-    file_path,
-    area=AREA,
+    file_path: str | Path | list[str | Path],
+    area: dict[str, float] = AREA,
     *,
-    sensor="sentinel-2",
-    overpass_time_utc=None,
-):
+    sensor: str = "sentinel-2",
+    overpass_time_utc: str | None = None,
+    cloud_file_path: str | Path | list[str | Path] | None = None,
+) -> pd.DataFrame:
     """Open one or more ERA5-Land NetCDFs and return a per-day DataFrame.
 
     `file_path` accepts a single path or a list of paths; multiple files
@@ -325,6 +328,35 @@ def calculate_daily_metrics(
             dataset["sd"].resample(time="1D").mean()
             .mean(dim=spatial_dims, skipna=True).values
         )
+
+    # Optional: cloud cover. The CDS ERA5-Land collection does not include
+    # tcc/lcc, so a caller can pass a separate `cloud_file_path` pointing at
+    # a `reanalysis-era5-single-levels` retrieve. If the variables already
+    # live on the main dataset (e.g. an alternate backend that bundles them
+    # with the land variables), we pick them up from there too.
+    if "tcc" in dataset:
+        columns["tcc_mean_overpass"] = _sample_at_overpass(
+            dataset["tcc"], overpass_time_utc, spatial_dims
+        )
+    if "lcc" in dataset:
+        columns["lcc_mean_overpass"] = _sample_at_overpass(
+            dataset["lcc"], overpass_time_utc, spatial_dims
+        )
+
+    if cloud_file_path is not None:
+        cloud_ds = _open_and_concat(cloud_file_path)
+        cloud_ds = subset_dataset_to_area(cloud_ds, area)
+        cloud_spatial = tuple(
+            d for d in ("latitude", "longitude") if d in cloud_ds.dims
+        )
+        if "tcc" in cloud_ds:
+            columns["tcc_mean_overpass"] = _sample_at_overpass(
+                cloud_ds["tcc"], overpass_time_utc, cloud_spatial
+            )
+        if "lcc" in cloud_ds:
+            columns["lcc_mean_overpass"] = _sample_at_overpass(
+                cloud_ds["lcc"], overpass_time_utc, cloud_spatial
+            )
 
     return pd.DataFrame(columns)
 
