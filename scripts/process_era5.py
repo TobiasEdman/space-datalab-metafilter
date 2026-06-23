@@ -147,17 +147,38 @@ def calculate_daily_metrics(file_path, area=AREA):
     )
 
     daily_mean_temp = temperature_c.resample(time="1D").mean()
+    daily_min_temp = temperature_c.resample(time="1D").min()
+    daily_max_temp = temperature_c.resample(time="1D").max()
     daily_total_precip = precipitation_mm.resample(time="1D").sum()
 
     if spatial_dims:
         daily_mean_temp = daily_mean_temp.mean(dim=spatial_dims, skipna=True)
+        daily_min_temp = daily_min_temp.mean(dim=spatial_dims, skipna=True)
+        daily_max_temp = daily_max_temp.mean(dim=spatial_dims, skipna=True)
         daily_total_precip = daily_total_precip.mean(dim=spatial_dims, skipna=True)
+
+    # Short-window precipitation lookbacks: shift(1) so day N looks at the
+    # window ending the day before N — no leakage of day N's own rain into
+    # its own "antecedent wetness" rule.
+    total_precip = pd.Series(daily_total_precip.values)
+    precip_prev24h = total_precip.shift(1).fillna(0).values
+    precip_prev48h = (
+        total_precip.rolling(2, min_periods=1).sum().shift(1).fillna(0).values
+    )
+
+    min_temp_values = daily_min_temp.values
+    freeze_flag = (pd.Series(min_temp_values) < 0).astype(int).values
 
     return pd.DataFrame(
         {
             "date": pd.to_datetime(daily_mean_temp["time"].values).strftime("%Y-%m-%d"),
             "mean_temp_c": daily_mean_temp.values,
+            "min_temp_c": min_temp_values,
+            "max_temp_c": daily_max_temp.values,
+            "freeze_flag": freeze_flag,
             "total_precip_mm": daily_total_precip.values,
+            "precip_prev24h_mm": precip_prev24h,
+            "precip_prev48h_mm": precip_prev48h,
         }
     )
 
