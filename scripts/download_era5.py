@@ -15,6 +15,12 @@ def download_era5_land():
             # CDS expects [north, west, south, east].
             'area': [AREA["north"], AREA["west"], AREA["south"], AREA["east"]],
             'data_format': 'netcdf',
+            # Without this, CDS-Beta wraps the NetCDF in a zip archive
+            # and writes it under the user-supplied .nc filename, which
+            # then makes xarray.open_dataset() fail with the misleading
+            # "did not find a match in any of xarray's currently installed
+            # IO backends" error on what is actually a zip file.
+            'download_format': 'unarchived',
         },
         f"{OUTPUT_DIR}/era5/era5_land_july_2024.nc"
     )
