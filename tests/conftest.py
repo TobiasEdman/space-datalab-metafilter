@@ -42,6 +42,7 @@ def make_era5_land_dataset(
     *, start: str, end: str, area=None,
     t2m_pattern="seasonal", tp_pattern="dry_with_event",
     ssrd_pattern=None,
+    skt_pattern=None, swvl1_pattern=None, sd_pattern=None,
 ) -> xr.Dataset:
     """Synthetic ERA5-Land hourly dataset with t2m and tp.
 
@@ -99,6 +100,40 @@ def make_era5_land_dataset(
         data_vars["ssrd"] = (("time", "latitude", "longitude"), ssrd)
     elif ssrd_pattern is not None:
         raise ValueError(f"Unknown ssrd_pattern: {ssrd_pattern}")
+
+    if skt_pattern == "warm":
+        data_vars["skt"] = (("time", "latitude", "longitude"),
+                            np.full((n_t, n_la, n_lo), 288.15, dtype=np.float32))  # +15 °C
+    elif skt_pattern == "frost":
+        data_vars["skt"] = (("time", "latitude", "longitude"),
+                            np.full((n_t, n_la, n_lo), 268.15, dtype=np.float32))  # −5 °C
+    elif skt_pattern == "diurnal_freeze":
+        # Peak ~+3 °C at 14 UTC, trough ~−5 °C at 02 UTC.
+        hour = times.hour.to_numpy()
+        cycle = 271.15 + 5.0 * np.cos(2 * np.pi * (hour - 14) / 24)
+        skt = np.broadcast_to(cycle[:, None, None], (n_t, n_la, n_lo)).astype(np.float32).copy()
+        data_vars["skt"] = (("time", "latitude", "longitude"), skt)
+    elif skt_pattern is not None:
+        raise ValueError(f"Unknown skt_pattern: {skt_pattern}")
+
+    if swvl1_pattern == "flat":
+        data_vars["swvl1"] = (("time", "latitude", "longitude"),
+                              np.full((n_t, n_la, n_lo), 0.25, dtype=np.float32))
+    elif swvl1_pattern == "rising":
+        ramp = np.linspace(0.15, 0.40, n_t, dtype=np.float32)
+        swvl1 = np.broadcast_to(ramp[:, None, None], (n_t, n_la, n_lo)).copy()
+        data_vars["swvl1"] = (("time", "latitude", "longitude"), swvl1)
+    elif swvl1_pattern is not None:
+        raise ValueError(f"Unknown swvl1_pattern: {swvl1_pattern}")
+
+    if sd_pattern == "snow":
+        data_vars["sd"] = (("time", "latitude", "longitude"),
+                           np.full((n_t, n_la, n_lo), 0.10, dtype=np.float32))  # 10 cm
+    elif sd_pattern == "no_snow":
+        data_vars["sd"] = (("time", "latitude", "longitude"),
+                           np.zeros((n_t, n_la, n_lo), dtype=np.float32))
+    elif sd_pattern is not None:
+        raise ValueError(f"Unknown sd_pattern: {sd_pattern}")
 
     return xr.Dataset(
         data_vars,

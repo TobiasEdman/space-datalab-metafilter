@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 from pathlib import Path
 
@@ -112,6 +114,32 @@ def _normalize_metafilter_payload(payload):
     }
 
 
+def _sample_at_overpass(
+    var: xr.DataArray, overpass_time_utc: str, spatial_dims: tuple[str, ...]
+) -> np.ndarray:
+    """Sample an hourly variable at the closest hourly slot to overpass_time_utc.
+
+    `overpass_time_utc` is "HH:MM" — rounded to the nearest whole hour.
+    Falls back to daily mean if the dataset has no matching hour slot
+    (e.g. when the input is already daily-aggregated).
+    """
+    hour = int(overpass_time_utc.split(":")[0])
+    minute = int(overpass_time_utc.split(":")[1])
+    if minute >= 30:
+        hour = (hour + 1) % 24
+
+    times = pd.to_datetime(var["time"].values)
+    mask = times.hour == hour
+    if not mask.any():
+        return var.resample(time="1D").mean().mean(dim=spatial_dims, skipna=True).values
+
+    sampled = var.isel(time=mask)
+    daily = sampled.resample(time="1D").mean()
+    if spatial_dims:
+        daily = daily.mean(dim=spatial_dims, skipna=True)
+    return daily.values
+
+
 def _open_and_concat(file_paths):
     """Open one or more NetCDF files and stitch along the time dimension.
 
@@ -152,13 +180,27 @@ def subset_dataset_to_area(dataset, area):
     return dataset.sel(latitude=latitude_slice, longitude=longitude_slice)
 
 
-def calculate_daily_metrics(file_path, area=AREA):
+def calculate_daily_metrics(
+    file_path: str | Path | list[str | Path],
+    area: dict[str, float] = AREA,
+    *,
+    sensor: str = "sentinel-2",
+    overpass_time_utc: str | None = None,
+) -> pd.DataFrame:
     """Open one or more ERA5-Land NetCDFs and return a per-day DataFrame.
 
     `file_path` accepts a single path or a list of paths; multiple files
     are concatenated along time (deduplicated) so a buffer month can
     feed the long-window lookback columns.
+
+    `sensor` and `overpass_time_utc` together select the hour at which
+    pass-time-sampled columns (`skt_at_pass_c`, plus future cloud-cover
+    columns) are evaluated. `overpass_time_utc` defaults to the matching
+    `DEFAULT_OVERPASS_TIME_UTC[sensor]` when omitted.
     """
+    if overpass_time_utc is None:
+        overpass_time_utc = DEFAULT_OVERPASS_TIME_UTC.get(sensor, "10:30")
+
     dataset = _open_and_concat(file_path)
 
     dataset = subset_dataset_to_area(dataset, area)
@@ -244,6 +286,48 @@ def calculate_daily_metrics(file_path, area=AREA):
         columns["ssrd_mj_m2"] = ssrd_daily_mj
         columns["ssrd_prev30d_mj_m2"] = (
             pd.Series(ssrd_daily_mj).rolling(30, min_periods=30).sum().shift(1).values
+        )
+
+    # Optional: skin temperature. Daily extremes + pass-time sample.
+    if "skt" in dataset:
+        skt_c = dataset["skt"] - 273.15
+        columns["skt_mean_c"] = (
+            skt_c.resample(time="1D").mean().mean(dim=spatial_dims, skipna=True).values
+        )
+        columns["skt_min_c"] = (
+            skt_c.resample(time="1D").min().mean(dim=spatial_dims, skipna=True).values
+        )
+        columns["skt_at_pass_c"] = _sample_at_overpass(
+            skt_c, overpass_time_utc, spatial_dims
+        )
+
+    # Optional: soil temperature layer 1.
+    if "stl1" in dataset:
+        stl1_c = dataset["stl1"] - 273.15
+        columns["stl1_mean_c"] = (
+            stl1_c.resample(time="1D").mean().mean(dim=spatial_dims, skipna=True).values
+        )
+
+    # Optional: surface soil moisture (0–7 cm).
+    if "swvl1" in dataset:
+        swvl1_daily = (
+            dataset["swvl1"].resample(time="1D").mean()
+            .mean(dim=spatial_dims, skipna=True).values
+        )
+        swvl1_series = pd.Series(swvl1_daily)
+        columns["swvl1_mean"] = swvl1_daily
+        columns["swvl1_delta_prev2d"] = (
+            (swvl1_series - swvl1_series.shift(2)).fillna(0).values
+        )
+        columns["swvl1_prev30d_mean"] = (
+            swvl1_series.rolling(30, min_periods=30).mean().shift(1).values
+        )
+
+    # Optional: snow depth (metres).
+    if "sd" in dataset:
+        columns["snow_depth_mean_m"] = (
+            dataset["sd"].resample(time="1D").mean()
+            .mean(dim=spatial_dims, skipna=True).values
         )
 
     return pd.DataFrame(columns)
