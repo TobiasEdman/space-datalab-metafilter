@@ -39,6 +39,15 @@ LEGACY_RULE_DEFAULTS = {
     },
 }
 
+# Default satellite overpass time (UTC) per sensor. Used by future
+# pass-time-sampled metric columns (cloud cover, skin temperature, etc.).
+# S2 → ~10:30 descending pass over Sweden. S1 → ~05:30 descending /
+# ~17:00 ascending — descending is the default.
+DEFAULT_OVERPASS_TIME_UTC = {
+    "sentinel-2": "10:30",
+    "sentinel-1": "05:30",
+}
+
 
 class MetafilterError(ValueError):
     pass
@@ -56,8 +65,40 @@ class MetafilterSelectionError(MetafilterError):
 
 
 def load_metafilter_parameters(json_file):
+    """Load a filter profile and normalize to the new {sensor, overpass_time_utc, rules}
+    shape. Accepts the legacy flat-dict form for backward compatibility."""
     with open(json_file, "r") as file:
-        return json.load(file)
+        payload = json.load(file)
+    return _normalize_metafilter_payload(payload)
+
+
+def _normalize_metafilter_payload(payload: dict) -> dict:
+    """Normalize both legacy (flat dict of rules) and new ({sensor, rules}) formats.
+
+    Returns the new shape every time, so downstream code only handles one form:
+        {"sensor": str, "overpass_time_utc": "HH:MM", "rules": {name: rule, ...}}
+
+    Legacy format is detected by the absence of a top-level "rules" key — the
+    whole dict is then treated as the rule set, with sensor defaulting to
+    sentinel-2 and overpass_time_utc to the matching default.
+    """
+    if "rules" in payload:
+        sensor = payload.get("sensor", "sentinel-2")
+        overpass = payload.get(
+            "overpass_time_utc",
+            DEFAULT_OVERPASS_TIME_UTC.get(sensor, "10:30"),
+        )
+        return {
+            "sensor": sensor,
+            "overpass_time_utc": overpass,
+            "rules": payload["rules"],
+        }
+    # Legacy: flat dict — every key is a rule. Treat as sentinel-2.
+    return {
+        "sensor": "sentinel-2",
+        "overpass_time_utc": DEFAULT_OVERPASS_TIME_UTC["sentinel-2"],
+        "rules": payload,
+    }
 
 
 def subset_dataset_to_area(dataset, area):
@@ -112,9 +153,17 @@ def calculate_daily_metrics(file_path, area=AREA):
 
 
 def normalize_metafilter_rules(metafilter_params):
+    """Validate + flatten the rule list. Accepts either the new
+    `{sensor, rules}` form (as normalized by `load_metafilter_parameters`)
+    or the legacy flat form (for direct callers passing raw dicts)."""
+    if "rules" in metafilter_params:
+        rules_dict = metafilter_params["rules"]
+    else:
+        rules_dict = metafilter_params
+
     normalized_rules = []
 
-    for rule_name, rule_config in metafilter_params.items():
+    for rule_name, rule_config in rules_dict.items():
         defaults = LEGACY_RULE_DEFAULTS.get(rule_name, {})
         merged_rule = {**defaults, **rule_config}
 
