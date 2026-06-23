@@ -24,6 +24,16 @@ COMPARISON_OPERATORS = {
         "apply": lambda series, threshold: series <= threshold,
         "symbol": "<=",
     },
+    "between": {
+        # Inclusive on both ends. Threshold must be a 2-element [low, high] list.
+        "apply": lambda series, threshold: (series >= threshold[0]) & (series <= threshold[1]),
+        "symbol": "in",
+    },
+    "abs_lt": {
+        # Absolute value comparison — useful for "stability" / "small change" gates.
+        "apply": lambda series, threshold: series.abs() < threshold,
+        "symbol": "|x| <",
+    },
 }
 
 LEGACY_RULE_DEFAULTS = {
@@ -185,6 +195,19 @@ def normalize_metafilter_rules(metafilter_params):
                 f"Metafilter rule '{rule_name}' has unsupported operator '{operator}'. "
                 f"Supported operators: {supported}."
             )
+
+        if operator == "between":
+            threshold = merged_rule["threshold"]
+            if not (isinstance(threshold, (list, tuple)) and len(threshold) == 2):
+                raise MetafilterConfigurationError(
+                    f"Metafilter rule '{rule_name}' uses 'between' but threshold is "
+                    f"not [low, high]; got {threshold!r}."
+                )
+            if threshold[0] > threshold[1]:
+                raise MetafilterConfigurationError(
+                    f"Metafilter rule '{rule_name}' has 'between' threshold "
+                    f"low > high ({threshold[0]} > {threshold[1]})."
+                )
 
         normalized_rules.append(
             {
