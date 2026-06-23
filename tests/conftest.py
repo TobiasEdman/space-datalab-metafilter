@@ -41,6 +41,7 @@ def _make_grid(area, n_lat=3, n_lon=3):
 def make_era5_land_dataset(
     *, start: str, end: str, area=None,
     t2m_pattern="seasonal", tp_pattern="dry_with_event",
+    ssrd_pattern=None,
 ) -> xr.Dataset:
     """Synthetic ERA5-Land hourly dataset with t2m and tp.
 
@@ -80,11 +81,27 @@ def make_era5_land_dataset(
     else:
         raise ValueError(f"Unknown tp_pattern: {tp_pattern}")
 
+    data_vars = {
+        "t2m": (("time", "latitude", "longitude"), t2m),
+        "tp": (("time", "latitude", "longitude"), tp),
+    }
+
+    if ssrd_pattern == "summer":
+        # Sinusoidal day-night cycle, peak at noon. Amplitude tuned so the
+        # daily integral is around ~18 MJ/m².
+        hour = times.hour.to_numpy()
+        peak = np.maximum(0, np.sin(np.pi * (hour - 6) / 12))
+        ssrd_hourly = (peak * 2.4e6).astype(np.float32)
+        ssrd = np.broadcast_to(ssrd_hourly[:, None, None], (n_t, n_la, n_lo)).copy()
+        data_vars["ssrd"] = (("time", "latitude", "longitude"), ssrd)
+    elif ssrd_pattern == "winter":
+        ssrd = np.full((n_t, n_la, n_lo), 1e5, dtype=np.float32)
+        data_vars["ssrd"] = (("time", "latitude", "longitude"), ssrd)
+    elif ssrd_pattern is not None:
+        raise ValueError(f"Unknown ssrd_pattern: {ssrd_pattern}")
+
     return xr.Dataset(
-        {
-            "t2m": (("time", "latitude", "longitude"), t2m),
-            "tp": (("time", "latitude", "longitude"), tp),
-        },
+        data_vars,
         coords={"time": times, "latitude": lats, "longitude": lons},
     )
 

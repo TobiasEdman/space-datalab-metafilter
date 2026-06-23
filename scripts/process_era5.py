@@ -1,6 +1,9 @@
+from __future__ import annotations
+
 import json
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import xarray as xr
 
@@ -111,6 +114,29 @@ def _normalize_metafilter_payload(payload):
     }
 
 
+def _open_and_concat(file_paths: str | Path | list[str | Path]) -> xr.Dataset:
+    """Open one or more NetCDF files and stitch along the time dimension.
+
+    Used to attach a buffer (previous) month to the primary month so the
+    long-lookback rolling columns can resolve on the first day of the
+    requested period.
+    """
+    if isinstance(file_paths, (str, Path)):
+        file_paths = [file_paths]
+
+    datasets = []
+    for path in file_paths:
+        ds = xr.open_dataset(path)
+        if "valid_time" in ds.coords or "valid_time" in ds.dims:
+            ds = ds.rename({"valid_time": "time"})
+        datasets.append(ds)
+
+    if len(datasets) == 1:
+        return datasets[0]
+    combined = xr.concat(datasets, dim="time")
+    return combined.sortby("time").drop_duplicates(dim="time")
+
+
 def subset_dataset_to_area(dataset, area):
     latitude = dataset["latitude"]
     longitude = dataset["longitude"]
@@ -129,9 +155,13 @@ def subset_dataset_to_area(dataset, area):
 
 
 def calculate_daily_metrics(file_path, area=AREA):
-    dataset = xr.open_dataset(file_path)
-    if "valid_time" in dataset.coords or "valid_time" in dataset.dims:
-        dataset = dataset.rename({"valid_time": "time"})
+    """Open one or more ERA5-Land NetCDFs and return a per-day DataFrame.
+
+    `file_path` accepts a single path or a list of paths; multiple files
+    are concatenated along time (deduplicated) so a buffer month can
+    feed the long-window lookback columns.
+    """
+    dataset = _open_and_concat(file_path)
 
     dataset = subset_dataset_to_area(dataset, area)
     if dataset.sizes.get("latitude", 0) == 0 or dataset.sizes.get("longitude", 0) == 0:
@@ -166,21 +196,59 @@ def calculate_daily_metrics(file_path, area=AREA):
         total_precip.rolling(2, min_periods=1).sum().shift(1).fillna(0).values
     )
 
+    # Long-window lookbacks: strict windows (min_periods=N) so day N+ has a
+    # value only when the full N-day history is available. NaN otherwise.
+    precip_prev7d = (
+        total_precip.rolling(7, min_periods=7).sum().shift(1).values
+    )
+    precip_prev30d = (
+        total_precip.rolling(30, min_periods=30).sum().shift(1).values
+    )
+
+    # Dry-streak: consecutive dry (<0.5 mm) days ending yesterday.
+    precip_prev = total_precip.shift(1).fillna(0)
+    is_wet = (precip_prev >= 0.5).astype(int)
+    dry_streak_days = is_wet.groupby(is_wet.cumsum()).cumcount().values
+
     min_temp_values = daily_min_temp.values
     freeze_flag = (pd.Series(min_temp_values) < 0).astype(int).values
 
-    return pd.DataFrame(
-        {
-            "date": pd.to_datetime(daily_mean_temp["time"].values).strftime("%Y-%m-%d"),
-            "mean_temp_c": daily_mean_temp.values,
-            "min_temp_c": min_temp_values,
-            "max_temp_c": daily_max_temp.values,
-            "freeze_flag": freeze_flag,
-            "total_precip_mm": daily_total_precip.values,
-            "precip_prev24h_mm": precip_prev24h,
-            "precip_prev48h_mm": precip_prev48h,
-        }
+    # GDD (base 5 °C) accumulated over the previous 30 days.
+    mean_temp_series = pd.Series(daily_mean_temp.values)
+    gdd_daily = (mean_temp_series.clip(lower=5) - 5).fillna(0)
+    gdd_prev30d = (
+        gdd_daily.rolling(30, min_periods=30).sum().shift(1).values
     )
+
+    columns = {
+        "date": pd.to_datetime(daily_mean_temp["time"].values).strftime("%Y-%m-%d"),
+        "mean_temp_c": daily_mean_temp.values,
+        "min_temp_c": min_temp_values,
+        "max_temp_c": daily_max_temp.values,
+        "freeze_flag": freeze_flag,
+        "total_precip_mm": daily_total_precip.values,
+        "precip_prev24h_mm": precip_prev24h,
+        "precip_prev48h_mm": precip_prev48h,
+        "precip_prev7d_mm": precip_prev7d,
+        "precip_prev30d_mm": precip_prev30d,
+        "dry_streak_days": dry_streak_days,
+        "gdd_prev30d_c": gdd_prev30d,
+    }
+
+    # Optional: solar radiation. Only emitted when ssrd is in the dataset.
+    if "ssrd" in dataset:
+        ssrd_daily_mj = (
+            dataset["ssrd"]
+            .resample(time="1D").sum()
+            .mean(dim=spatial_dims, skipna=True).values
+            / 1e6
+        )
+        columns["ssrd_mj_m2"] = ssrd_daily_mj
+        columns["ssrd_prev30d_mj_m2"] = (
+            pd.Series(ssrd_daily_mj).rolling(30, min_periods=30).sum().shift(1).values
+        )
+
+    return pd.DataFrame(columns)
 
 
 def normalize_metafilter_rules(metafilter_params):
