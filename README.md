@@ -83,7 +83,8 @@ python main.py
 ### Workflow Steps
 
 1. **Download ERA5-Land Data**:
-   - If you need to refresh the ERA5 input file, run `python scripts/download_era5.py`.
+   - If you need to refresh the ERA5 input file, run `python -m scripts.download_era5`.
+   - The `-m` form is required because the scripts import from the local `utils.config` package; invoking the file directly with `python scripts/download_era5.py` puts only `scripts/` on `sys.path` and the import fails.
 
 2. **Process ERA5 Data**:
    - Automatically filters ERA5-Land data to identify dates matching specified weather conditions over the configured AOI.
