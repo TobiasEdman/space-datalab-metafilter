@@ -63,6 +63,13 @@ This repository currently supports two external data-fetching modes:
    pip install -r requirements.txt
    ```
 
+   After install, verify the NetCDF stack actually loaded — silent ABI
+   mismatches between `netCDF4` and the underlying C libraries are a
+   common cause of `xarray.open_dataset()` errors later:
+   ```bash
+   python -c "import netCDF4, h5netcdf, cftime; print(netCDF4.__version__, h5netcdf.__version__, cftime.__version__)"
+   ```
+
 3. **Configure Your Environment**:
    - Update the following values in `utils/config.py` or `.env`:
      - `AREA`: The geographical bounding box of the area of interest (northern half of Sweden by default).
