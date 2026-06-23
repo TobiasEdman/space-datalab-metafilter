@@ -1,0 +1,86 @@
+{
+  "sensor": "sentinel-2",
+  "overpass_time_utc": "10:30",
+  "rules": {
+    "temperature": {
+      "name": "Daily mean temperature",
+      "metric_column": "mean_temp_c",
+      "operator": "gt",
+      "threshold": 10.0,
+      "unit": "Celsius",
+      "description": "Avoid winter scenes where NDVI is undefined."
+    },
+    "precipitation_today": {
+      "name": "Today's precipitation",
+      "metric_column": "total_precip_mm",
+      "operator": "lt",
+      "threshold": 0.5,
+      "unit": "mm",
+      "description": "Dry surface — less likely to have cloud cover at overpass."
+    },
+    "precipitation_prev48h": {
+      "name": "Precipitation, previous 48 hours",
+      "metric_column": "precip_prev48h_mm",
+      "operator": "lt",
+      "threshold": 3.0,
+      "unit": "mm",
+      "description": "Atmosphere needs time to clear after rain events."
+    },
+    "precipitation_prev7d": {
+      "name": "Precipitation, previous 7 days",
+      "metric_column": "precip_prev7d_mm",
+      "operator": "lt",
+      "threshold": 25.0,
+      "unit": "mm",
+      "description": "Wet week → residual humidity and convective afternoon cloud for several days afterwards."
+    },
+    "cloud_total": {
+      "name": "Total cloud cover at overpass",
+      "metric_column": "tcc_mean_overpass",
+      "operator": "lt",
+      "threshold": 0.30,
+      "unit": "fraction",
+      "description": "Direct cloud signal at ~10:30 UTC overpass."
+    },
+    "cloud_low": {
+      "name": "Low cloud cover at overpass",
+      "metric_column": "lcc_mean_overpass",
+      "operator": "lt",
+      "threshold": 0.20,
+      "unit": "fraction",
+      "description": "Low clouds (stratus, fog) are the main Sentinel-2 killer."
+    },
+    "solar_radiation": {
+      "name": "Daily solar radiation",
+      "metric_column": "ssrd_mj_m2",
+      "operator": "gt",
+      "threshold": 12.0,
+      "unit": "MJ/m^2",
+      "description": "High daily insolation correlates with clear-sky days."
+    },
+    "precipitation_prev30d": {
+      "name": "Cumulative precipitation, previous 30 days",
+      "metric_column": "precip_prev30d_mm",
+      "operator": "between",
+      "threshold": [30.0, 150.0],
+      "unit": "mm",
+      "description": "Stay in climatologically 'normal' band; below = drought NDVI suppression, above = waterlogging."
+    },
+    "gdd_accumulation": {
+      "name": "Growing degree days, previous 30 days (base 5 C)",
+      "metric_column": "gdd_prev30d_c",
+      "operator": "gt",
+      "threshold": 200.0,
+      "unit": "degree-days",
+      "description": "Ensures vegetation is in an active growth window."
+    },
+    "soil_moisture_history": {
+      "name": "Rootzone moisture, previous 30 days",
+      "metric_column": "swvl1_prev30d_mean",
+      "operator": "between",
+      "threshold": [0.15, 0.40],
+      "unit": "m^3/m^3",
+      "description": "Avoid scenes where 30-day soil dryness or saturation dominates the spectral signal."
+    }
+  }
+}
