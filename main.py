@@ -23,6 +23,15 @@ def print_info(message):
 
 
 def main():
+    # Fail fast: the run needs openEO credentials for the NDVI stage, so
+    # reject a misconfigured environment before the ERA5 processing runs.
+    if not username or not password:
+        print(
+            "ERROR OpenEO credentials must be set via OPENEO_USERNAME and "
+            "OPENEO_PASSWORD."
+        )
+        return 1
+
     output_dir = Path(NDVI_OUTPUT_DIR)
     daily_metrics_path = output_dir / "era5_daily_metrics.csv"
     metafilter_path = "filters/metafilter.json"
