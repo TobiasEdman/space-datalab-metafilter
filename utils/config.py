@@ -18,8 +18,3 @@ NDVI_OUTPUT_DIR = os.path.join(OUTPUT_DIR, "ndvi_comparison")
 eo_service_url = os.getenv("OPENEO_SERVICE_URL", "https://openeo.digitalearth.se")
 username = os.getenv("OPENEO_USERNAME")
 password = os.getenv("OPENEO_PASSWORD")
-
-if not username or not password:
-    raise EnvironmentError(
-        "OpenEO credentials must be set via OPENEO_USERNAME and OPENEO_PASSWORD."
-    )

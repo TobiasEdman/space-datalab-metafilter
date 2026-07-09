@@ -1,3 +1,4 @@
+import sys
 from pathlib import Path
 
 from scripts.compare_ndvi import (
@@ -23,6 +24,16 @@ def print_info(message):
 
 
 def main():
+    # Fail fast: the run needs openEO credentials for the NDVI stage, so
+    # reject a misconfigured environment before the ERA5 processing runs.
+    if not username or not password:
+        print(
+            "ERROR OpenEO credentials must be set via OPENEO_USERNAME and "
+            "OPENEO_PASSWORD.",
+            file=sys.stderr,
+        )
+        return 1
+
     output_dir = Path(NDVI_OUTPUT_DIR)
     daily_metrics_path = output_dir / "era5_daily_metrics.csv"
     metafilter_path = "filters/metafilter.json"
@@ -48,9 +59,12 @@ def main():
     except MetafilterError as exc:
         if getattr(exc, "daily_metrics", None) is not None:
             save_daily_metrics(exc.daily_metrics, daily_metrics_path)
-            print(f"{exc}\nSaved ERA5 diagnostics to: {daily_metrics_path}")
+            print(
+                f"{exc}\nSaved ERA5 diagnostics to: {daily_metrics_path}",
+                file=sys.stderr,
+            )
         else:
-            print(exc)
+            print(exc, file=sys.stderr)
         return 1
 
     save_daily_metrics(era5_results["daily_metrics"], daily_metrics_path)
