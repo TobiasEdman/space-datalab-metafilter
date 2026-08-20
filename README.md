@@ -200,6 +200,20 @@ The suite covers:
 
 ## Installation and Setup
 
+The reusable meteorology API supports Python 3.9 and newer and can be
+installed directly from a checkout:
+
+```bash
+pip install .
+```
+
+Public imports are `AnalogModel`, `DailyMeteorology`,
+`calculate_daily_metrics`, and `fetch_daily_meteorology` from `metafilter`.
+Open-Meteo monthly responses are cached as validated NetCDF files under the
+configured cache directory. Installed command equivalents are
+`metafilter-process-era5` and `metafilter-download-open-meteo`; repository
+scripts remain available for checkout compatibility.
+
 1. **Install Conda or Python Virtual Environment Manager**:
    - [Miniconda](https://docs.conda.io/en/latest/miniconda.html) or [Virtualenv](https://virtualenv.pypa.io/en/latest/).
 
