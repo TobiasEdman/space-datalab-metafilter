@@ -244,6 +244,36 @@ def test_open_meteo_dataset_feeds_calculate_daily_metrics(tmp_path):
     assert df["tcc_mean_overpass"].dropna().between(0.14, 0.16).all()
 
 
+def test_small_aoi_off_cell_falls_back_to_nearest(tmp_path):
+    """A tile-sized AOI whose bounds miss the snapped ERA5 cell must still
+    resolve to that cell instead of failing — the fetch snapped it there."""
+    from metafilter.core import calculate_daily_metrics as library_metrics
+
+    hourly = _build_om_hourly(start="2024-08-01", n_days=5)
+    ds = open_meteo_json_to_dataset(hourly, lat=56.75, lon=14.5)
+    path = tmp_path / "era5.nc"
+    ds.to_netcdf(path)
+    # ~5 km AOI south-east of the cell centre; the cell lies outside its bounds
+    # but well within one 0.25° grid step of the centroid.
+    area = {"west": 14.55, "east": 14.63, "south": 56.66, "north": 56.71}
+    df = library_metrics(str(path), area=area)
+    assert len(df) > 0
+    assert "mean_temp_c" in df.columns
+
+
+def test_area_beyond_one_grid_step_still_fails(tmp_path):
+    from metafilter.core import MetafilterSelectionError
+    from metafilter.core import calculate_daily_metrics as library_metrics
+
+    hourly = _build_om_hourly(start="2024-08-01", n_days=5)
+    ds = open_meteo_json_to_dataset(hourly, lat=59.25, lon=18.0)
+    path = tmp_path / "era5.nc"
+    ds.to_netcdf(path)
+    area = {"west": 14.0, "east": 14.1, "south": 56.6, "north": 56.7}
+    with pytest.raises(MetafilterSelectionError):
+        library_metrics(str(path), area=area)
+
+
 # ── download_period dispatches to the right backend ───────────────────────
 
 def test_download_period_dispatches_to_open_meteo(tmp_path):

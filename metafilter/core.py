@@ -105,6 +105,31 @@ def _normalize_metafilter_payload(payload):
     }
 
 
+_ERA5_GRID_DEG = 0.25
+
+
+def _nearest_cell_within_grid_step(dataset, area, grid_deg=_ERA5_GRID_DEG):
+    """Select the grid cell nearest the AOI centroid, within one grid step.
+
+    Fetches snap small AOIs to the ~0.25° ERA5 grid so neighbouring AOIs
+    share cache, which means a single-cell dataset can lie just outside
+    the exact AOI bounds. Honour that snapping contract instead of
+    failing; anything farther than one grid step away is a genuine
+    mismatch and returns None.
+    """
+    center_lat = (area["south"] + area["north"]) / 2
+    center_lon = (area["west"] + area["east"]) / 2
+    try:
+        return dataset.sel(
+            latitude=[center_lat],
+            longitude=[center_lon],
+            method="nearest",
+            tolerance=grid_deg,
+        )
+    except KeyError:
+        return None
+
+
 def subset_dataset_to_area(dataset, area):
     latitude = dataset["latitude"]
     longitude = dataset["longitude"]
@@ -193,9 +218,15 @@ def calculate_daily_metrics(
     if overpass_time_utc is None:
         overpass_time_utc = DEFAULT_OVERPASS_TIME_UTC.get(sensor, "10:30")
 
-    dataset = _open_and_concat(file_path)
-    dataset = subset_dataset_to_area(dataset, area)
+    source = _open_and_concat(file_path)
+    dataset = subset_dataset_to_area(source, area)
     if dataset.sizes.get("latitude", 0) == 0 or dataset.sizes.get("longitude", 0) == 0:
+        dataset = _nearest_cell_within_grid_step(source, area)
+    if (
+        dataset is None
+        or dataset.sizes.get("latitude", 0) == 0
+        or dataset.sizes.get("longitude", 0) == 0
+    ):
         raise MetafilterSelectionError("Configured AREA does not overlap the ERA5 dataset.")
 
     spatial = tuple(d for d in ("latitude", "longitude") if d in dataset.dims)
