@@ -73,6 +73,17 @@ def test_new_format_fills_default_overpass_for_sensor():
     assert normalized["overpass_time_utc"] == "10:30"
 
 
+@pytest.mark.parametrize("payload", [[], "rules", 42, None])
+def test_profile_requires_json_object(payload):
+    with pytest.raises(MetafilterConfigurationError, match="JSON object"):
+        _normalize_metafilter_payload(payload)
+
+
+def test_profile_rules_require_json_object():
+    with pytest.raises(MetafilterConfigurationError, match="'rules'.*JSON object"):
+        _normalize_metafilter_payload({"rules": []})
+
+
 def test_legacy_inferred_defaults_for_named_rules():
     """Legacy 'temperature' / 'precipitation' bare-bones rules pick up
     metric_column + operator from LEGACY_RULE_DEFAULTS."""

@@ -84,7 +84,16 @@ def _normalize_metafilter_payload(payload):
     to "cds" otherwise — the value is consumed by scripts/download_era5.py to
     pick the data source, not by the rule engine itself.
     """
+    if not isinstance(payload, dict):
+        raise MetafilterConfigurationError(
+            "Metafilter profile must be a JSON object."
+        )
+
     if "rules" in payload:
+        if not isinstance(payload["rules"], dict):
+            raise MetafilterConfigurationError(
+                "Metafilter profile 'rules' must be a JSON object."
+            )
         sensor = payload.get("sensor", "sentinel-2")
         overpass = payload.get(
             "overpass_time_utc",
@@ -147,6 +156,17 @@ def subset_dataset_to_area(dataset, area):
     return dataset.sel(latitude=latitude_slice, longitude=longitude_slice)
 
 
+def _netcdf_engine(path):
+    """Choose an xarray backend from the file signature when possible."""
+    with Path(path).open("rb") as stream:
+        signature = stream.read(8)
+    if signature[:4] in {b"CDF\x01", b"CDF\x02"}:
+        return "scipy"
+    if signature == b"\x89HDF\r\n\x1a\n":
+        return "h5netcdf"
+    return None
+
+
 def _open_and_concat(file_paths):
     """Open one or more NetCDF files and concatenate along the time dimension.
 
@@ -158,7 +178,10 @@ def _open_and_concat(file_paths):
 
     datasets = []
     for path in file_paths:
-        with xr.open_dataset(path) as opened:
+        path = Path(path)
+        engine = _netcdf_engine(path)
+        kwargs = {"engine": engine} if engine else {}
+        with xr.open_dataset(path, **kwargs) as opened:
             ds = opened
             if "valid_time" in ds.coords or "valid_time" in ds.dims:
                 ds = ds.rename({"valid_time": "time"})

@@ -210,9 +210,10 @@ pip install .
 Public imports are `AnalogModel`, `DailyMeteorology`,
 `calculate_daily_metrics`, and `fetch_daily_meteorology` from `metafilter`.
 Open-Meteo monthly responses are cached as validated NetCDF files under the
-configured cache directory. Installed command equivalents are
-`metafilter-process-era5` and `metafilter-download-open-meteo`; repository
-scripts remain available for checkout compatibility.
+configured cache directory. Installed commands are
+`metafilter-process-era5` and `metafilter-download-open-meteo`; run either
+with `--help` for its inputs and options. Repository scripts remain available
+for checkout compatibility.
 
 1. **Install Conda or Python Virtual Environment Manager**:
    - [Miniconda](https://docs.conda.io/en/latest/miniconda.html) or [Virtualenv](https://virtualenv.pypa.io/en/latest/).
@@ -232,10 +233,10 @@ scripts remain available for checkout compatibility.
    ```
 
    After install, verify the NetCDF stack actually loaded — silent ABI
-   mismatches between `netCDF4` and the underlying C libraries are the most
-   common cause of `xarray.open_dataset()` errors later:
+   mismatches between HDF5 and its underlying C libraries are a common cause
+   of `xarray.open_dataset()` errors later:
    ```bash
-   python -c "import netCDF4, h5netcdf, cftime; print(netCDF4.__version__, h5netcdf.__version__, cftime.__version__)"
+   python -c "import h5netcdf, cftime; print(h5netcdf.__version__, cftime.__version__)"
    ```
 
 3. **Configure Your Environment**:
@@ -259,11 +260,25 @@ python main.py
 
 1. **Download ERA5-Land Data**:
    - If you need to refresh the ERA5 input file, run `python -m scripts.download_era5`.
-    - The `-m` form is required because the scripts import from the local `utils.config` package; invoking the file directly with `python scripts/download_era5.py` puts only `scripts/` on `sys.path` and the import fails.
+   - The `-m` form is required because the scripts import from the local `utils.config` package; invoking the file directly with `python scripts/download_era5.py` puts only `scripts/` on `sys.path` and the import fails.
+
+   Without CDS credentials, download the equivalent ERA5 fields from
+   Open-Meteo instead:
+
+   ```bash
+   metafilter-download-open-meteo --year 2024 --month 8 \
+     --bbox 18.0 59.2 18.2 59.4
+   ```
 
 2. **Process ERA5 Data**:
    - Automatically filters ERA5-Land data to identify dates matching specified weather conditions over the configured AOI.
    - The active rules are defined in `filters/metafilter.json`, including the metric column, operator, threshold, unit, and description used for diagnostics.
+
+   ```bash
+   metafilter-process-era5 data/era5/openmeteo_land_2024_08.nc \
+     --filter filters/sentinel2_openmeteo.json \
+     --metrics-output data/era5/daily_metrics.csv
+   ```
 
 3. **Authenticate and Query Sentinel-2 Data**:
    - Connects to the configured openEO backend (Digital Earth Sweden by default) to fetch Sentinel-2 data for each day in the full period and each metafilter-selected day.

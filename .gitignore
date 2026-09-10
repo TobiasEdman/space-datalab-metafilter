@@ -8,6 +8,9 @@ source_cat.py
 metafilter_results_map.html
 ./metafilter_results_map.html
 data/ndvi_comparison/
+data/era5/
+*.egg-info/
+.venv/
 __pycache__/
 *.py[cod]
 *$py.class
