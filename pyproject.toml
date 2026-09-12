@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "space-datalab-metafilter"
 version = "0.1.0"
 description = "Meteorological filtering and analog-date selection"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = [
   "numpy>=1.24",
   "pandas>=2.0",

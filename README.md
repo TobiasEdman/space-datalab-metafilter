@@ -200,7 +200,7 @@ The suite covers:
 
 ## Installation and Setup
 
-The reusable meteorology API supports Python 3.9 and newer and can be
+The reusable meteorology API supports Python 3.10 and newer and can be
 installed directly from a checkout:
 
 ```bash

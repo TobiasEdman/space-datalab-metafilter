@@ -7,7 +7,7 @@ setup(
     name="space-datalab-metafilter",
     version="0.1.0",
     description="Meteorological filtering and analog-date selection",
-    python_requires=">=3.9",
+    python_requires=">=3.10",
     packages=find_packages(include=("metafilter*",)),
     install_requires=(
         "numpy>=1.24",
