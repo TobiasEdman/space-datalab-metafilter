@@ -29,6 +29,7 @@ that was written under the user-supplied .nc filename.
 import json
 from pathlib import Path
 
+from metafilter.core import LEGACY_RULE_DEFAULTS
 from utils.config import AREA, OUTPUT_DIR
 
 
@@ -50,6 +51,19 @@ ERA5_SINGLE_LEVELS_VARIABLES = [
     "total_cloud_cover",
     "low_cloud_cover",
 ]
+
+# Metric-column prefix -> the CDS ERA5-Land variable calculate_daily_metrics
+# derives it from. Cloud columns (tcc_*, lcc_*) come from ERA5 single levels
+# and are covered by cloud_vars_needed().
+_METRIC_SOURCE_VARIABLES = (
+    (("mean_temp_", "min_temp_", "max_temp_", "freeze_", "gdd_"), "2m_temperature"),
+    (("total_precip_", "precip_", "dry_streak_"), "total_precipitation"),
+    (("ssrd_",), "surface_solar_radiation_downwards"),
+    (("skt_",), "skin_temperature"),
+    (("stl1_",), "soil_temperature_level_1"),
+    (("swvl1_",), "volumetric_soil_water_layer_1"),
+    (("snow_depth_",), "snow_depth"),
+)
 
 _LONG_LOOKBACK_PREFIXES = (
     "precip_prev7d_",
@@ -90,6 +104,32 @@ def cloud_vars_needed(filter_path):
         rule.get("metric_column", "").startswith(("tcc_", "lcc_"))
         for rule in rules.values()
     )
+
+
+def era5_land_variables_for_filter(filter_path):
+    """ERA5-Land variables the profile's active rules need, in retrieval order.
+
+    Fetching only the legacy temperature/precipitation pair leaves the
+    extended profiles without their inputs: the S1 profile then fails on a
+    missing `skt_at_pass_c`, the extended S2 profile on `ssrd_mj_m2`.
+    """
+    needed = set()
+    for rule_name, rule in _rules_from_filter(filter_path).items():
+        column = rule.get("metric_column") or LEGACY_RULE_DEFAULTS.get(rule_name, {}).get(
+            "metric_column", ""
+        )
+        if column.startswith(("tcc_", "lcc_")):
+            continue
+        for prefixes, variable in _METRIC_SOURCE_VARIABLES:
+            if column.startswith(prefixes):
+                needed.add(variable)
+                break
+        else:
+            raise ValueError(
+                f"rule {rule_name!r}: no ERA5-Land variable is known for metric column "
+                f"{column!r}"
+            )
+    return [variable for variable in ERA5_LAND_VARIABLES if variable in needed]
 
 
 def long_lookback_needed(filter_path):
@@ -213,6 +253,8 @@ def download_period(year, month, filter_path, area=None, variables=None):
             f"supported: 'cds', 'open-meteo'."
         )
 
+    if variables is None:
+        variables = era5_land_variables_for_filter(filter_path)
     land_paths = [
         download_era5_land(y, m, variables=variables, area=area)
         for y, m in months_to_fetch

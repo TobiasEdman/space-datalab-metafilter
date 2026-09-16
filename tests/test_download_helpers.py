@@ -65,3 +65,50 @@ def test_previous_month_normal():
 
 def test_previous_month_january_wraps_year():
     assert _previous_month(2024, 1) == (2023, 12)
+
+
+# ── ERA5-Land variables follow the profile's rules ─────────────────────────
+
+def test_era5_land_variables_for_s1_profile():
+    from scripts.download_era5 import era5_land_variables_for_filter
+    from tests.conftest import REPO_ROOT
+
+    variables = era5_land_variables_for_filter(REPO_ROOT / "filters" / "sentinel1_default.json")
+    assert variables == [
+        "total_precipitation",
+        "skin_temperature",
+        "volumetric_soil_water_layer_1",
+        "snow_depth",
+    ]
+
+
+def test_era5_land_variables_for_extended_s2_profile_skip_cloud_columns():
+    from scripts.download_era5 import era5_land_variables_for_filter
+    from tests.conftest import REPO_ROOT
+
+    variables = era5_land_variables_for_filter(REPO_ROOT / "filters" / "sentinel2_extended.json")
+    assert variables == [
+        "2m_temperature",
+        "total_precipitation",
+        "surface_solar_radiation_downwards",
+        "volumetric_soil_water_layer_1",
+    ]
+
+
+def test_era5_land_variables_for_legacy_profile_use_rule_defaults():
+    from scripts.download_era5 import era5_land_variables_for_filter
+    from tests.conftest import REPO_ROOT
+
+    variables = era5_land_variables_for_filter(REPO_ROOT / "filters" / "metafilter.json")
+    assert variables == ["2m_temperature", "total_precipitation"]
+
+
+def test_unknown_metric_column_is_rejected(tmp_path):
+    import json
+    import pytest
+    from scripts.download_era5 import era5_land_variables_for_filter
+
+    profile = tmp_path / "odd.json"
+    profile.write_text(json.dumps({"rules": {"x": {"metric_column": "humidity_mean", "operator": "gt", "threshold": 1}}}))
+    with pytest.raises(ValueError, match="humidity_mean"):
+        era5_land_variables_for_filter(profile)
