@@ -29,6 +29,7 @@ import pandas as pd
 import xarray as xr
 
 from .config import AREA, OUTPUT_DIR
+from .core import ACCUMULATION_ATTR, ACCUMULATION_HOURLY
 
 
 # Open-Meteo hourly variables that map to the columns in calculate_daily_metrics.
@@ -107,6 +108,10 @@ def open_meteo_json_to_dataset(hourly_payload, lat, lon):
     return xr.Dataset(
         data_vars,
         coords={"time": times, "latitude": lats, "longitude": lons},
+        # Open-Meteo hourly values are per-hour sums/means, never running
+        # totals; without this tag calculate_daily_metrics would treat them
+        # as CDS forecast-start accumulations.
+        attrs={ACCUMULATION_ATTR: ACCUMULATION_HOURLY, "metafilter_source": "open-meteo"},
     )
 
 

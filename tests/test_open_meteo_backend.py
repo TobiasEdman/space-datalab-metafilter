@@ -348,11 +348,14 @@ def test_openmeteo_profile_end_to_end_pass(tmp_path):
     early_days = 24 * 10  # first 10 days wet
     hourly["precipitation"][:early_days] = [3.0] * early_days  # ~720 mm if all kept
 
-    # Trim to a more realistic precip footprint: 2 mm/day for first 15 days, dry after
+    # Trim to a more realistic precip footprint: 2 mm/day for the first 16
+    # days, dry after. Open-Meteo stamps each hour at its end ("sum of the
+    # preceding hour"), so a sample's day is the day of the hour it covers;
+    # 16 wet days keeps the 30-day window clear of the inclusive 30 mm bound.
     for i, t in enumerate(hourly["time"]):
-        ts = pd.Timestamp(t)
-        days_since_start = (ts - pd.Timestamp("2024-07-15")).days
-        if days_since_start < 15:
+        covered = pd.Timestamp(t) - pd.Timedelta(hours=1)
+        days_since_start = (covered - pd.Timestamp("2024-07-15")).days
+        if 0 <= days_since_start < 16:
             hourly["precipitation"][i] = 2.0 / 24  # 2 mm/day, in mm/h
         else:
             hourly["precipitation"][i] = 0.0

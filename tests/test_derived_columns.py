@@ -161,14 +161,22 @@ def test_cloud_columns_absent_when_no_file(era5_land_factory, test_area):
 
 # ── Multi-file (buffer-month) handling ─────────────────────────────────────
 
-def test_buffer_month_concat_enables_long_lookback(era5_land_factory, test_area):
+def test_buffer_month_concat_enables_long_lookback(tmp_path, test_area):
     """Two contiguous months concatenated → first day of month 2 has its
     precip_prev30d_mm fully resolved (no NaN), because the buffer month
-    supplied the trailing data."""
-    buffer = era5_land_factory(start="2024-07-01", end="2024-08-01",
-                               t2m_pattern="warm", tp_pattern="wet_continuous")
-    primary = era5_land_factory(start="2024-08-01", end="2024-09-01",
-                                t2m_pattern="warm", tp_pattern="dry")
+    supplied the trailing data.
+
+    Both files are cut from one continuous series, as CDS delivers them: the
+    August file's first 00:00 sample is July 31's 24-hour total, so the
+    accumulation is consistent across the seam."""
+    from tests.conftest import make_era5_land_dataset, write_netcdf
+
+    series = make_era5_land_dataset(start="2024-07-01", end="2024-09-01",
+                                    t2m_pattern="warm", tp_pattern="wet_continuous")
+    buffer = write_netcdf(series.sel(time=slice("2024-07-01", "2024-07-31T23:00")),
+                          tmp_path / "era5_land_2024_07.nc")
+    primary = write_netcdf(series.sel(time=slice("2024-08-01", None)),
+                           tmp_path / "era5_land_2024_08.nc")
 
     df = calculate_daily_metrics([buffer, primary], area=test_area)
 

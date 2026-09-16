@@ -116,6 +116,14 @@ def _normalize_metafilter_payload(payload):
 
 _ERA5_GRID_DEG = 0.25
 
+# Accumulation convention of the hourly source, carried as a dataset attribute.
+# CDS ERA5-Land accumulates tp/ssrd from the 00 UTC forecast start; Open-Meteo
+# serves per-hour sums. Untagged data is CDS output — the only source that
+# arrives without our tag — so that is the default, never a guess from values.
+ACCUMULATION_ATTR = "metafilter_accumulation"
+ACCUMULATION_FORECAST_START = "forecast_start"
+ACCUMULATION_HOURLY = "hourly"
+
 
 def _nearest_cell_within_grid_step(dataset, area, grid_deg=_ERA5_GRID_DEG):
     """Select the grid cell nearest the AOI centroid, within one grid step.
@@ -193,6 +201,35 @@ def _open_and_concat(file_paths):
     return combined.sortby("time").drop_duplicates(dim="time")
 
 
+def _hourly_increments(var):
+    """Per-hour increments of a forecast-start accumulation.
+
+    ERA5-Land stamps D hh:00 (hh = 1..23) with the total since D 00:00 and
+    stamps D+1 00:00 with day D's 24-hour total. The increment is therefore
+    the difference from the previous hour, except at 01:00 where it is the
+    value itself. Like every hourly increment here, the result is stamped at
+    the hour it ends; the first sample has no predecessor and becomes NaN.
+    """
+    hours = var["time"].dt.hour
+    increments = var - var.shift(time=1)
+    return increments.where(hours != 1, var)
+
+
+def _daily_sum(hourly, spatial):
+    """Sum hour-ending increments per calendar day.
+
+    A value stamped 00:00 is the last hour of the previous day, so the series
+    is moved back one hour before resampling. A day with no data is NaN, not
+    0; a day missing its final hour (the last day of a CDS file) is the sum
+    of what it has.
+    """
+    shifted = hourly.assign_coords(time=hourly["time"] - pd.Timedelta(hours=1))
+    daily = shifted.resample(time="1D").sum(min_count=1)
+    if spatial:
+        daily = daily.mean(dim=spatial, skipna=True)
+    return daily
+
+
 def _sample_at_overpass(var, overpass_time_utc, spatial_dims):
     """Sample an hourly variable at the closest hourly slot to overpass_time_utc.
 
@@ -259,6 +296,23 @@ def calculate_daily_metrics(
     )
     df = pd.DataFrame({"date": daily_time_index.strftime("%Y-%m-%d")})
 
+    accumulation = dataset.attrs.get(ACCUMULATION_ATTR, ACCUMULATION_FORECAST_START)
+    if accumulation not in (ACCUMULATION_FORECAST_START, ACCUMULATION_HOURLY):
+        raise MetafilterConfigurationError(
+            f"Unknown {ACCUMULATION_ATTR} value {accumulation!r}; expected "
+            f"{ACCUMULATION_FORECAST_START!r} or {ACCUMULATION_HOURLY!r}."
+        )
+
+    def hourly_increments(name):
+        var = dataset[name]
+        if accumulation == ACCUMULATION_FORECAST_START:
+            var = _hourly_increments(var)
+        return var
+
+    def align_daily(daily):
+        series = pd.Series(daily.values, index=pd.to_datetime(daily["time"].values))
+        return series.reindex(daily_time_index).values
+
     # ── Temperature ────────────────────────────────────────────────────
     if "t2m" in dataset:
         t_c = dataset["t2m"] - 273.15
@@ -275,10 +329,8 @@ def calculate_daily_metrics(
 
     # ── Precipitation + lookbacks ─────────────────────────────────────
     if "tp" in dataset:
-        precip = (dataset["tp"] * 1000.0).resample(time="1D").sum().mean(
-            dim=spatial, skipna=True
-        )
-        df["total_precip_mm"] = precip.values
+        precip = _daily_sum(hourly_increments("tp") * 1000.0, spatial)
+        df["total_precip_mm"] = align_daily(precip)
         # Short lookbacks
         df["precip_prev24h_mm"] = (
             pd.Series(df["total_precip_mm"]).shift(1).fillna(0).values
@@ -313,10 +365,7 @@ def calculate_daily_metrics(
 
     # ── Solar radiation ───────────────────────────────────────────────
     if "ssrd" in dataset:
-        ssrd_daily_mj = (
-            dataset["ssrd"].resample(time="1D").sum().mean(dim=spatial, skipna=True).values
-            / 1e6
-        )
+        ssrd_daily_mj = align_daily(_daily_sum(hourly_increments("ssrd"), spatial) / 1e6)
         df["ssrd_mj_m2"] = ssrd_daily_mj
         df["ssrd_prev30d_mj_m2"] = (
             pd.Series(ssrd_daily_mj).rolling(30, min_periods=30).sum().shift(1).values

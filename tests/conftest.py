@@ -72,6 +72,18 @@ def make_era5_land_dataset(
     lats, lons = _make_grid(area)
     n_t, n_la, n_lo = len(times), len(lats), len(lons)
 
+    # Accumulated fields (tp, ssrd) are built one day early so the first
+    # 00:00 sample carries the previous day's total, as a real CDS file does.
+    # Every hourly sample covers the hour ending at its stamp, so a sample's
+    # day and hour are those of the hour it covers.
+    times_ext = pd.date_range(
+        start=pd.Timestamp(start) - pd.Timedelta(days=1), end=end, freq="h", inclusive="left"
+    )
+    covered = times_ext - pd.Timedelta(hours=1)
+    hour_of = covered.hour.to_numpy()
+    day_of = covered.normalize()
+    n_ext = len(times_ext)
+
     # ── Patterns (Kelvin / m / m^3/m^3 / J/m^2) ─────────────────────────
     t2m = np.zeros((n_t, n_la, n_lo), dtype=np.float32)
     if t2m_pattern == "seasonal":
@@ -89,11 +101,11 @@ def make_era5_land_dataset(
     else:
         raise ValueError(f"Unknown t2m_pattern: {t2m_pattern}")
 
-    tp = np.zeros((n_t, n_la, n_lo), dtype=np.float32)
+    tp = np.zeros((n_ext, n_la, n_lo), dtype=np.float32)
     if tp_pattern == "dry_with_event":
         # One rain event on day 5 (10 mm = 0.01 m), otherwise zero
         rain_day = pd.Timestamp(start) + pd.Timedelta(days=5)
-        mask = (times.normalize() == rain_day.normalize())
+        mask = day_of == rain_day.normalize()
         tp[mask, :, :] = 0.01 / 24  # 10 mm spread over 24h, in metres
     elif tp_pattern == "dry":
         pass  # zeros
@@ -104,7 +116,7 @@ def make_era5_land_dataset(
     elif tp_pattern == "wet_with_dry_tail":
         # 2 mm/day for the first part of the run, then zero for the trailing week.
         # Satisfies precip_prev30d_mm ∈ [30, 150] while keeping prev24h/48h/7d at 0.
-        days_offset = (times - pd.Timestamp(start)).days.to_numpy()
+        days_offset = (day_of - pd.Timestamp(start).normalize()).days.to_numpy()
         total_days = days_offset.max() + 1
         dry_tail_start = max(0, total_days - 8)
         wet_mask = days_offset < dry_tail_start
@@ -157,16 +169,40 @@ def make_era5_land_dataset(
         # Sinusoidal day-night cycle, peak at noon. Amplitude chosen so the
         # integrated daily total comes out near ~18 MJ/m² — comfortably above
         # the 12 MJ/m² S2-extended threshold so the fixture isn't on the edge.
-        hour = times.hour.to_numpy()
-        peak = np.maximum(0, np.sin(np.pi * (hour - 6) / 12))
+        peak = np.maximum(0, np.sin(np.pi * (hour_of - 6) / 12))
         ssrd_hourly = (peak * 2.4e6).astype(np.float32)
-        ssrd = np.broadcast_to(ssrd_hourly[:, None, None], (n_t, n_la, n_lo)).copy()
+        ssrd = np.broadcast_to(ssrd_hourly[:, None, None], (n_ext, n_la, n_lo)).copy()
         data_vars["ssrd"] = (("time", "latitude", "longitude"), ssrd)
     elif ssrd_pattern == "winter":
-        ssrd = np.full((n_t, n_la, n_lo), 1e5, dtype=np.float32)  # very low
+        ssrd = np.full((n_ext, n_la, n_lo), 1e5, dtype=np.float32)  # very low
         data_vars["ssrd"] = (("time", "latitude", "longitude"), ssrd)
 
+    # CDS delivers tp/ssrd as forecast-start accumulations; hand the same
+    # shape to the code under test instead of the per-hour sums built above.
+    for name in ("tp", "ssrd"):
+        if name in data_vars:
+            dims, values = data_vars[name]
+            accumulated = as_forecast_start_accumulation(values, times_ext)
+            data_vars[name] = (dims, accumulated[n_ext - n_t:])
+
     return xr.Dataset(data_vars, coords=coords)
+
+
+def as_forecast_start_accumulation(increments: np.ndarray, times: pd.DatetimeIndex) -> np.ndarray:
+    """Restate hour-ending increments in ERA5-Land's accumulation convention.
+
+    The value stamped hh:00 (hh = 1..23) is the running total since 00:00 and
+    the value stamped 00:00 is the previous day's 24-hour total — what CDS
+    `reanalysis-era5-land` delivers and what calculate_daily_metrics undoes.
+    """
+    out = np.zeros_like(increments)
+    running = np.zeros(increments.shape[1:], dtype=increments.dtype)
+    for index, stamp in enumerate(times):
+        if stamp.hour == 1:
+            running = np.zeros_like(running)
+        running = running + increments[index]
+        out[index] = running
+    return out
 
 
 def make_era5_cloud_dataset(
