@@ -183,6 +183,8 @@ def _open_and_concat(file_paths):
     """
     if isinstance(file_paths, (str, Path)):
         file_paths = [file_paths]
+    if not file_paths:
+        raise ValueError("at least one NetCDF path is required")
 
     datasets = []
     for path in file_paths:
@@ -228,6 +230,24 @@ def _daily_sum(hourly, spatial):
     if spatial:
         daily = daily.mean(dim=spatial, skipna=True)
     return daily
+
+
+def _select_area(source, area, what):
+    """Subset to the AOI, falling back to the nearest cell within one grid step.
+
+    Raises MetafilterSelectionError when the dataset genuinely does not cover
+    the AOI; `what` names the dataset in the message.
+    """
+    dataset = subset_dataset_to_area(source, area)
+    if dataset.sizes.get("latitude", 0) == 0 or dataset.sizes.get("longitude", 0) == 0:
+        dataset = _nearest_cell_within_grid_step(source, area)
+    if (
+        dataset is None
+        or dataset.sizes.get("latitude", 0) == 0
+        or dataset.sizes.get("longitude", 0) == 0
+    ):
+        raise MetafilterSelectionError(f"Configured AREA does not overlap the {what} dataset.")
+    return dataset
 
 
 def _sample_at_overpass(var, overpass_time_utc, spatial_dims):
@@ -278,16 +298,7 @@ def calculate_daily_metrics(
     if overpass_time_utc is None:
         overpass_time_utc = DEFAULT_OVERPASS_TIME_UTC.get(sensor, "10:30")
 
-    source = _open_and_concat(file_path)
-    dataset = subset_dataset_to_area(source, area)
-    if dataset.sizes.get("latitude", 0) == 0 or dataset.sizes.get("longitude", 0) == 0:
-        dataset = _nearest_cell_within_grid_step(source, area)
-    if (
-        dataset is None
-        or dataset.sizes.get("latitude", 0) == 0
-        or dataset.sizes.get("longitude", 0) == 0
-    ):
-        raise MetafilterSelectionError("Configured AREA does not overlap the ERA5 dataset.")
+    dataset = _select_area(_open_and_concat(file_path), area, "ERA5")
 
     spatial = tuple(d for d in ("latitude", "longitude") if d in dataset.dims)
 
@@ -426,9 +437,10 @@ def calculate_daily_metrics(
         )
 
     # ── Cloud cover (separate ERA5 single-levels file) ────────────────
-    if cloud_file_path is not None:
-        cds = _open_and_concat(cloud_file_path)
-        cds = subset_dataset_to_area(cds, area)
+    # An empty list is what download_period returns for a backend that bundles
+    # cloud cover with the land variables; treat it like no file at all.
+    if cloud_file_path:
+        cds = _select_area(_open_and_concat(cloud_file_path), area, "cloud")
         cspatial = tuple(d for d in ("latitude", "longitude") if d in cds.dims)
         if "tcc" in cds:
             df["tcc_mean_overpass"] = _sample_at_overpass(
