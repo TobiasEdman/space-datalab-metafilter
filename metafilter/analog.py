@@ -65,24 +65,36 @@ class AnalogModel:
         self._fitted = False
 
     def fit(self, frames: Mapping[int, pd.DataFrame]) -> "AnalogModel":
-        """Fit pooled normalization and covariance from per-year frames."""
-        prepared = []
-        self._by_year: dict[int, pd.DataFrame] = {}
+        """Fit pooled normalization and covariance from per-year frames.
+
+        Every year is validated and the new state is built locally before any
+        of it is published, so a rejected refit leaves the previous fit intact.
+        A row needs a parseable date as well as complete features; rows
+        failing either are counted in ``rejected_rows``.
+        """
         required = {"date", *self.features}
+        by_year: dict[int, pd.DataFrame] = {}
+        rejected: dict[int, int] = {}
+        prepared = []
         for year, frame in frames.items():
             missing = sorted(required - set(frame.columns))
             if missing:
                 raise ValueError(f"year {year} missing columns: {', '.join(missing)}")
             selected = frame.loc[:, ["date", *self.features]].copy()
-            selected["date"] = pd.to_datetime(selected["date"]).dt.strftime("%Y-%m-%d")
+            dates = pd.to_datetime(selected["date"], errors="coerce")
             feature_values = selected.loc[:, self.features].to_numpy(dtype=float)
-            valid = pd.Series(np.isfinite(feature_values).all(axis=1), index=selected.index)
-            self.rejected_rows[int(year)] = int((~valid).sum())
+            valid = (
+                pd.Series(np.isfinite(feature_values).all(axis=1), index=selected.index)
+                & dates.notna()
+            )
+            rejected[int(year)] = int((~valid).sum())
+            kept_dates = dates.loc[valid]
             selected = selected.loc[valid].reset_index(drop=True)
             if selected.empty:
-                raise ValueError(f"year {year} has no rows with complete features")
+                raise ValueError(f"year {year} has no rows with complete features and dates")
+            selected["date"] = kept_dates.dt.strftime("%Y-%m-%d").to_numpy()
             selected.insert(0, "year", int(year))
-            self._by_year[int(year)] = selected
+            by_year[int(year)] = selected
             prepared.append(selected)
 
         if not prepared:
@@ -90,19 +102,27 @@ class AnalogModel:
 
         pooled = pd.concat(prepared, ignore_index=True)
         values = pooled.loc[:, self.features].to_numpy(dtype=float)
-        self.mean_ = values.mean(axis=0)
-        self.scale_ = values.std(axis=0)
-        self.scale_[self.scale_ == 0] = 1.0
-        standardized = (values - self.mean_) / self.scale_
-        self.weight_vector_ = np.sqrt(
+        mean = values.mean(axis=0)
+        scale = values.std(axis=0)
+        scale[scale == 0] = 1.0
+        standardized = (values - mean) / scale
+        weight_vector = np.sqrt(
             np.array([self.weights[name] for name in self.features], dtype=float)
         )
         if self.metric == "mahalanobis":
             covariance = np.atleast_2d(np.cov(standardized, rowvar=False, ddof=0))
             covariance += np.eye(len(self.features)) * self.regularization
-            self.inverse_covariance_ = np.linalg.pinv(covariance)
+            inverse_covariance = np.linalg.pinv(covariance)
         else:
-            self.inverse_covariance_ = None
+            inverse_covariance = None
+
+        # Publish only now: everything above can raise without side effects.
+        self._by_year = by_year
+        self.rejected_rows = rejected
+        self.mean_ = mean
+        self.scale_ = scale
+        self.weight_vector_ = weight_vector
+        self.inverse_covariance_ = inverse_covariance
         self._fitted = True
         return self
 
