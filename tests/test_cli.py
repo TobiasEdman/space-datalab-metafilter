@@ -39,8 +39,10 @@ def test_process_cli_forwards_paths_and_writes_metrics(monkeypatch, tmp_path, ca
         ]
     )
 
+    from metafilter.config import AREA
+
     process.assert_called_once_with(
-        "input.nc", {"rules": {}}, cloud_file_path="cloud.nc"
+        "input.nc", {"rules": {}}, area=AREA, cloud_file_path="cloud.nc"
     )
     assert output.exists()
     assert "2024-08-01" in capsys.readouterr().out
@@ -127,3 +129,32 @@ def test_open_meteo_cli_reports_download_failure(monkeypatch, capsys):
 
     assert exc_info.value.code == 1
     assert "service unavailable" in capsys.readouterr().err
+
+
+def test_process_cli_forwards_bbox_as_area(monkeypatch, capsys):
+    process = Mock(return_value={"selected_dates": ["2024-08-01"], "daily_metrics": pd.DataFrame()})
+    monkeypatch.setattr(cli, "load_metafilter_parameters", Mock(return_value={"rules": {}}))
+    monkeypatch.setattr(cli, "process_era5_data", process)
+
+    cli.process_era5_main(["input.nc", "--filter", "p.json", "--bbox", "2", "48", "3", "49"])
+
+    assert process.call_args.kwargs["area"] == {"west": 2.0, "south": 48.0, "east": 3.0, "north": 49.0}
+
+
+def test_process_cli_defaults_to_configured_area(monkeypatch, capsys):
+    from metafilter.config import AREA
+
+    process = Mock(return_value={"selected_dates": ["2024-08-01"], "daily_metrics": pd.DataFrame()})
+    monkeypatch.setattr(cli, "load_metafilter_parameters", Mock(return_value={"rules": {}}))
+    monkeypatch.setattr(cli, "process_era5_data", process)
+
+    cli.process_era5_main(["input.nc", "--filter", "p.json"])
+
+    assert process.call_args.kwargs["area"] == AREA
+
+
+def test_process_cli_rejects_inverted_bbox(monkeypatch):
+    monkeypatch.setattr(cli, "load_metafilter_parameters", Mock(return_value={"rules": {}}))
+    with pytest.raises(SystemExit) as exc_info:
+        cli.process_era5_main(["input.nc", "--filter", "p.json", "--bbox", "3", "48", "2", "49"])
+    assert exc_info.value.code == 2

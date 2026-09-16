@@ -3,6 +3,7 @@
 import argparse
 from pathlib import Path
 
+from .config import AREA
 from .core import MetafilterError, load_metafilter_parameters, process_era5_data
 from .open_meteo import download_open_meteo_land
 
@@ -40,13 +41,22 @@ def process_era5_main(argv=None) -> None:
         type=Path,
         help="Optional CSV path for daily metrics and selection results",
     )
+    parser.add_argument(
+        "--bbox",
+        nargs=4,
+        type=float,
+        metavar=("WEST", "SOUTH", "EAST", "NORTH"),
+        help="Processing AOI in WGS84; defaults to the configured area",
+    )
     args = parser.parse_args(argv)
+    area = _area_from_bbox(args.bbox, parser) or AREA
 
     try:
         params = load_metafilter_parameters(args.filter)
         results = process_era5_data(
             args.input,
             params,
+            area=area,
             cloud_file_path=args.cloud_file,
         )
         if args.metrics_output:

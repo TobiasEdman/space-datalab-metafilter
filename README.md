@@ -281,6 +281,7 @@ python main.py
    ```bash
    metafilter-process-era5 data/era5/openmeteo_land_2024_08.nc \
      --filter filters/sentinel2_openmeteo.json \
+     --bbox 18.0 59.2 18.2 59.4 \
      --metrics-output data/era5/daily_metrics.csv
    ```
 
