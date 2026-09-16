@@ -32,6 +32,12 @@ from .config import AREA, OUTPUT_DIR
 from .core import ACCUMULATION_ATTR, ACCUMULATION_HOURLY
 
 
+# Reanalysis model to request. Without `models` Open-Meteo answers with
+# "Best Match", a blend of IFS HRES, ERA5 and ERA5-Land whose composition
+# changes across years - not one source to rank analog dates against.
+# ERA5-Land is the dataset the CDS backend retrieves, so the two agree.
+OPEN_METEO_MODEL = "era5_land"
+
 # Open-Meteo hourly variables that map to the columns in calculate_daily_metrics.
 # Order matters: we request all of them in one HTTP call.
 OPEN_METEO_DEFAULT_HOURLY = [
@@ -111,7 +117,11 @@ def open_meteo_json_to_dataset(hourly_payload, lat, lon):
         # Open-Meteo hourly values are per-hour sums/means, never running
         # totals; without this tag calculate_daily_metrics would treat them
         # as CDS forecast-start accumulations.
-        attrs={ACCUMULATION_ATTR: ACCUMULATION_HOURLY, "metafilter_source": "open-meteo"},
+        attrs={
+            ACCUMULATION_ATTR: ACCUMULATION_HOURLY,
+            "metafilter_source": "open-meteo",
+            "metafilter_source_model": OPEN_METEO_MODEL,
+        },
     )
 
 
@@ -147,6 +157,7 @@ def fetch_open_meteo_archive(
             "end_date": end_date,
             "hourly": ",".join(variables),
             "timezone": "UTC",
+            "models": OPEN_METEO_MODEL,
         },
         timeout=timeout,
     )

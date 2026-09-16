@@ -210,7 +210,11 @@ pip install .
 Public imports are `AnalogModel`, `DailyMeteorology`,
 `calculate_daily_metrics`, and `fetch_daily_meteorology` from `metafilter`.
 Open-Meteo monthly responses are cached as validated NetCDF files under the
-configured cache directory. Installed commands are
+configured cache directory, keyed by the pinned `era5_land` reanalysis
+model; caches written before the pin (Open-Meteo's *Best Match* blend) are
+ignored and refetched. Hourly values from both backends cover the hour
+ending at their stamp; CDS ERA5-Land running totals are converted on read.
+Installed commands are
 `metafilter-process-era5` and `metafilter-download-open-meteo`; run either
 with `--help` for its inputs and options. Repository scripts remain available
 for checkout compatibility.

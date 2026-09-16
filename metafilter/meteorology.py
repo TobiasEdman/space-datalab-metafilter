@@ -21,10 +21,11 @@ except ImportError:  # pragma: no cover - exercised on Windows
     import msvcrt
 
 from .open_meteo import (
+    OPEN_METEO_MODEL,
     fetch_open_meteo_archive,
     open_meteo_json_to_dataset,
 )
-from .core import calculate_daily_metrics
+from .core import ACCUMULATION_ATTR, ACCUMULATION_HOURLY, calculate_daily_metrics
 
 
 _CACHE_LOCKS: dict[Path, threading.Lock] = {}
@@ -107,7 +108,9 @@ def _months_between(start: pd.Timestamp, end: pd.Timestamp) -> list[tuple[int, i
 def _cache_name(bbox: dict[str, float], year: int, month: int) -> str:
     bbox_key = ",".join(f"{bbox[key]:.6f}" for key in ("west", "south", "east", "north"))
     digest = hashlib.sha256(bbox_key.encode("utf-8")).hexdigest()[:12]
-    return f"openmeteo_{digest}_{year}_{month:02d}.nc"
+    # The model is part of the name so caches written before the model was
+    # pinned (Open-Meteo "Best Match") are never picked up again.
+    return f"openmeteo_{OPEN_METEO_MODEL}_{digest}_{year}_{month:02d}.nc"
 
 
 def _cache_lock(path: Path) -> threading.Lock:
@@ -123,6 +126,11 @@ def _valid_cache(path: Path, year: int, month: int) -> bool:
         with xr.open_dataset(path, engine="scipy") as dataset:
             required = {"t2m", "tp", "ssrd", "swvl1"}
             if not required <= set(dataset.data_vars):
+                return False
+            if (
+                dataset.attrs.get("metafilter_source_model") != OPEN_METEO_MODEL
+                or dataset.attrs.get(ACCUMULATION_ATTR) != ACCUMULATION_HOURLY
+            ):
                 return False
             times = pd.DatetimeIndex(dataset["time"].values)
             expected_times = pd.date_range(
