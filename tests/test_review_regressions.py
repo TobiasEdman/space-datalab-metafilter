@@ -28,7 +28,7 @@ def write_dataset(path, times, variables, lat=59.3, lon=18.1):
     return path
 
 @pytest.mark.parametrize('profile', ['sentinel1_default', 'sentinel2_extended'])
-def test_cds_download_period_fetches_profile_requirements(tmp_path, profile):
+def test_cds_download_period_fetches_profile_requirements(tmp_path, monkeypatch, profile):
     calls = []
     mapping = {'2m_temperature':('t2m',293.15), 'total_precipitation':('tp',0.0), 'surface_solar_radiation_downwards':('ssrd',1e6), 'skin_temperature':('skt',293.15), 'soil_temperature_level_1':('stl1',293.15), 'volumetric_soil_water_layer_1':('swvl1',0.25), 'snow_depth':('sd',0.0), 'snowfall':('sf',0.0), '2m_dewpoint_temperature':('d2m',280), 'total_cloud_cover':('tcc',0.1), 'low_cloud_cover':('lcc',0.05)}
     def retrieve(dataset, request, output):
@@ -40,7 +40,8 @@ def test_cds_download_period_fetches_profile_requirements(tmp_path, profile):
             if int(day) <= calendar.monthrange(year, month)[1]
         ])
         write_dataset(output, times, dict(mapping[k] for k in request['variable']))
-    with patch.dict(sys.modules, {'cdsapi':SimpleNamespace(Client=lambda:SimpleNamespace(retrieve=retrieve))}), patch('scripts.download_era5.OUTPUT_DIR',str(tmp_path)):
+    monkeypatch.setitem(sys.modules, 'cdsapi', SimpleNamespace(Client=lambda:SimpleNamespace(retrieve=retrieve)))
+    with patch('scripts.download_era5.OUTPUT_DIR',str(tmp_path)):
         config = SOURCE/'filters'/f'{profile}.json'
         paths = download_period(2024,8,config,area=AREA)
         metrics = calculate_daily_metrics(paths['land'],area=AREA,cloud_file_path=paths['cloud'] or None)

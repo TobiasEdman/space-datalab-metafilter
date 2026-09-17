@@ -167,7 +167,7 @@ def test_public_api_fetches_boundary_and_replaces_old_cache(tmp_path, month):
 
 
 @pytest.mark.parametrize("year,month", [(2024, 8), (2024, 2), (2024, 12)])
-def test_cds_download_requests_only_one_extra_hour(tmp_path, year, month):
+def test_cds_download_requests_only_one_extra_hour(tmp_path, monkeypatch, year, month):
     boundary = pd.Timestamp(year=year, month=month, day=1) + pd.offsets.MonthBegin(1)
     calls = []
 
@@ -182,8 +182,8 @@ def test_cds_download_requests_only_one_extra_hour(tmp_path, year, month):
             "tp": np.where(times == boundary, 0.010, 0.),
         })
 
-    with patch.dict(sys.modules, {"cdsapi": SimpleNamespace(Client=lambda: SimpleNamespace(retrieve=retrieve))}), \
-         patch("scripts.download_era5.OUTPUT_DIR", str(tmp_path)):
+    monkeypatch.setitem(sys.modules, "cdsapi", SimpleNamespace(Client=lambda: SimpleNamespace(retrieve=retrieve)))
+    with patch("scripts.download_era5.OUTPUT_DIR", str(tmp_path)):
         path = download_era5_land(year, month, area=AREA)
     assert len(calls) == 2
     assert calls[1]["year"] == str(boundary.year)
@@ -199,7 +199,7 @@ def test_cds_download_requests_only_one_extra_hour(tmp_path, year, month):
     assert not selected.selected.any()
 
 
-def test_cds_join_preserves_independently_packed_values(tmp_path):
+def test_cds_join_preserves_independently_packed_values(tmp_path, monkeypatch):
     def retrieve(dataset, request, output):
         boundary = request["month"] == "09"
         times = (pd.date_range("2024-09-01", periods=1, freq="h") if boundary
@@ -215,8 +215,8 @@ def test_cds_join_preserves_independently_packed_values(tmp_path):
                    "_FillValue": -32768, "zlib": True},
         })
 
-    with patch.dict(sys.modules, {"cdsapi": SimpleNamespace(Client=lambda: SimpleNamespace(retrieve=retrieve))}), \
-         patch("scripts.download_era5.OUTPUT_DIR", str(tmp_path)):
+    monkeypatch.setitem(sys.modules, "cdsapi", SimpleNamespace(Client=lambda: SimpleNamespace(retrieve=retrieve)))
+    with patch("scripts.download_era5.OUTPUT_DIR", str(tmp_path)):
         path = download_era5_land(2024, 8, area=AREA, variables=["total_precipitation"])
     with xr.open_dataset(path, engine="scipy") as result:
         assert result.tp.isel(time=-1).item() == pytest.approx(0.010)
@@ -225,7 +225,7 @@ def test_cds_join_preserves_independently_packed_values(tmp_path):
 
 
 @pytest.mark.parametrize("failure", ["missing_sample", "request_error"])
-def test_cds_boundary_failure_preserves_existing_output(tmp_path, failure):
+def test_cds_boundary_failure_preserves_existing_output(tmp_path, monkeypatch, failure):
     destination = tmp_path / "era5" / "era5_land_2024_08.nc"
     destination.parent.mkdir()
     destination.write_bytes(b"existing output")
@@ -237,8 +237,8 @@ def test_cds_boundary_failure_preserves_existing_output(tmp_path, failure):
         times = pd.date_range("2024-08-01", periods=31 * 24, freq="h")
         _write(output, times, {"tp": np.zeros(len(times))})
 
-    with patch.dict(sys.modules, {"cdsapi": SimpleNamespace(Client=lambda: SimpleNamespace(retrieve=retrieve))}), \
-         patch("scripts.download_era5.OUTPUT_DIR", str(tmp_path)):
+    monkeypatch.setitem(sys.modules, "cdsapi", SimpleNamespace(Client=lambda: SimpleNamespace(retrieve=retrieve)))
+    with patch("scripts.download_era5.OUTPUT_DIR", str(tmp_path)):
         with pytest.raises((ValueError, RuntimeError), match="boundary|provider unavailable"):
             download_era5_land(2024, 8, area=AREA)
     assert destination.read_bytes() == b"existing output"
