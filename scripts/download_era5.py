@@ -26,10 +26,15 @@ which makes CDS skip the zip wrapping. Without that, downstream
 match in any of xarray's currently installed IO backends" on the zip
 that was written under the user-supplied .nc filename.
 """
+import calendar
 import json
+import os
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
-from metafilter.core import LEGACY_RULE_DEFAULTS
+import pandas as pd
+
+from metafilter.core import LEGACY_RULE_DEFAULTS, _open_and_concat
 from utils.config import AREA, OUTPUT_DIR
 
 
@@ -146,7 +151,7 @@ def _previous_month(year, month):
 
 
 def download_era5_land(year=2024, month=8, variables=None, area=None):
-    """Retrieve one month of ERA5-Land hourly data over `area`.
+    """Retrieve a month plus the following 00:00 boundary over `area`.
 
     Defaults preserve the original main-branch behaviour: 2024-08, two variables,
     `data/era5/era5_land_<year>_<MM>.nc`. Extended call sites pass `variables`
@@ -160,24 +165,48 @@ def download_era5_land(year=2024, month=8, variables=None, area=None):
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
 
     c = cdsapi.Client()
-    c.retrieve(
-        "reanalysis-era5-land",
-        {
-            "variable": variables,
-            "year": str(year),
-            "month": f"{month:02d}",
-            "day": [f"{day:02d}" for day in range(1, 32)],
-            "time": [f"{hour:02d}:00" for hour in range(24)],
-            # CDS expects [north, west, south, east].
-            "area": [area["north"], area["west"], area["south"], area["east"]],
-            "data_format": "netcdf",
-            # Without this, CDS-Beta wraps the NetCDF in a zip archive and
-            # writes it under the user-supplied .nc filename — confusing
-            # every downstream xarray.open_dataset() call.
-            "download_format": "unarchived",
-        },
-        out_path,
-    )
+    request = {
+        "variable": variables,
+        "year": str(year),
+        "month": f"{month:02d}",
+        "day": [f"{day:02d}" for day in range(1, calendar.monthrange(year, month)[1] + 1)],
+        "time": [f"{hour:02d}:00" for hour in range(24)],
+        # CDS expects [north, west, south, east].
+        "area": [area["north"], area["west"], area["south"], area["east"]],
+        "data_format": "netcdf",
+        # Without this, CDS-Beta wraps the NetCDF in a zip archive and
+        # writes it under the user-supplied .nc filename — confusing
+        # every downstream xarray.open_dataset() call.
+        "download_format": "unarchived",
+    }
+    boundary = pd.Timestamp(year=year, month=month, day=1) + pd.offsets.MonthBegin(1)
+    boundary_request = {
+        **request,
+        "year": str(boundary.year),
+        "month": f"{boundary.month:02d}",
+        "day": ["01"],
+        "time": ["00:00"],
+    }
+    # CDS date fields form a Cartesian product: a separate one-hour request
+    # avoids downloading an entire additional month for the boundary.
+    with TemporaryDirectory(dir=Path(out_path).parent) as scratch:
+        month_path = str(Path(scratch) / "month.nc")
+        boundary_path = str(Path(scratch) / "boundary.nc")
+        c.retrieve("reanalysis-era5-land", request, month_path)
+        c.retrieve("reanalysis-era5-land", boundary_request, boundary_path)
+        dataset = _open_and_concat([month_path, boundary_path])
+        dataset = dataset.sel(time=slice(f"{year}-{month:02d}-01", boundary))
+        if boundary not in pd.DatetimeIndex(dataset["time"].values):
+            raise ValueError("CDS response is missing the following midnight boundary")
+        complete_path = Path(scratch) / "complete.nc"
+        # The files may use different integer packing scales. Persist the
+        # decoded values, not the first file's inherited scale/dtype, which
+        # can overflow when packing a larger boundary accumulation.
+        dataset.drop_encoding().to_netcdf(
+            complete_path, engine="scipy",
+            encoding={"time": {"units": "seconds since 1970-01-01", "dtype": "float64"}},
+        )
+        os.replace(complete_path, out_path)
     return out_path
 
 

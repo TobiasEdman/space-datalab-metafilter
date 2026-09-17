@@ -34,7 +34,11 @@ def test_cds_download_period_fetches_profile_requirements(tmp_path, profile):
     def retrieve(dataset, request, output):
         calls.append(request)
         year, month = int(request['year']), int(request['month'])
-        times = pd.date_range(f'{year}-{month:02}-01', periods=calendar.monthrange(year,month)[1]*24, freq='h')
+        times = pd.DatetimeIndex([
+            f'{year}-{month:02}-{day}T{hour}'
+            for day in request['day'] for hour in request['time']
+            if int(day) <= calendar.monthrange(year, month)[1]
+        ])
         write_dataset(output, times, dict(mapping[k] for k in request['variable']))
     with patch.dict(sys.modules, {'cdsapi':SimpleNamespace(Client=lambda:SimpleNamespace(retrieve=retrieve))}), patch('scripts.download_era5.OUTPUT_DIR',str(tmp_path)):
         config = SOURCE/'filters'/f'{profile}.json'
@@ -74,7 +78,7 @@ def test_era5_backend_pins_a_reanalysis_model():
     assert get.call_args.kwargs['params'].get('models') in {'era5','era5_land','era5_seamless'}
 
 def test_process_cli_accepts_custom_aoi(tmp_path):
-    path = write_dataset(tmp_path/'paris.nc',pd.date_range('2024-08-01',periods=24,freq='h'),{'t2m':[293.15], 'tp':[0.]},lat=48.75,lon=2.25)
+    path = write_dataset(tmp_path/'paris.nc',pd.date_range('2024-08-01',periods=25,freq='h'),{'t2m':[293.15], 'tp':[0.]},lat=48.75,lon=2.25)
     process_era5_main([str(path),'--filter',str(SOURCE/'filters/metafilter.json'),'--bbox','2','48','3','49'])
 
 def test_analog_rejects_missing_candidate_date():

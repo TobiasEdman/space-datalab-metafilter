@@ -182,7 +182,7 @@ def test_fetch_open_meteo_archive_calls_archive_endpoint():
     assert "archive-api.open-meteo.com" in call.args[0]
     params = call.kwargs["params"]
     assert params["start_date"] == "2024-08-01"
-    assert params["end_date"] == "2024-08-31"
+    assert params["end_date"] == "2024-09-01"
     assert "temperature_2m" in params["hourly"]
     assert hourly == fake_hourly
 
@@ -337,19 +337,27 @@ def test_download_period_rejects_unknown_backend(tmp_path):
 
 # ── Integration: end-to-end filter against an Open-Meteo NetCDF ───────────
 
+def _monthly_response(hourly):
+    """Respect requested dates instead of returning many months in one call."""
+    def get(url, *, params, timeout):
+        times = pd.to_datetime(hourly["time"])
+        keep = ((times >= pd.Timestamp(params["start_date"])) &
+                (times < pd.Timestamp(params["end_date"]) + pd.Timedelta(days=1)))
+        subset = {name: np.asarray(values)[keep].tolist() for name, values in hourly.items()}
+        response = MagicMock()
+        response.json.return_value = {"hourly": subset}
+        return response
+    return get
+
+
 def test_openmeteo_profile_end_to_end_pass(tmp_path):
     """Run the shipped sentinel2_openmeteo.json against a synthetic Open-Meteo
     NetCDF that satisfies all its rules. Confirms backend selector + variable
     mapping + filter engine compose correctly."""
-    # Build 45 days of data with: warm, dry tail, modest cloud, normal precip 30d
-    hourly = _build_om_hourly(start="2024-07-15", n_days=45)
-    # Add some precipitation early in July so the 30d window has 30-150 mm
-    # but the immediate days are dry
-    early_days = 24 * 10  # first 10 days wet
-    hourly["precipitation"][:early_days] = [3.0] * early_days  # ~720 mm if all kept
-
-    # Trim to a more realistic precip footprint: 2 mm/day for the first 16
-    # days, dry after. Open-Meteo stamps each hour at its end ("sum of the
+    # July + August and the following midnight: warm, dry tail, modest cloud.
+    hourly = _build_om_hourly(start="2024-07-01", n_days=63)
+    # Rain footprint: 2 mm/day on July 15–30, dry afterward.
+    # Open-Meteo stamps each hour at its end ("sum of the
     # preceding hour"), so a sample's day is the day of the hour it covers;
     # 16 wet days keeps the 30-day window clear of the inclusive 30 mm bound.
     for i, t in enumerate(hourly["time"]):
@@ -360,16 +368,12 @@ def test_openmeteo_profile_end_to_end_pass(tmp_path):
         else:
             hourly["precipitation"][i] = 0.0
 
-    fake_response = MagicMock()
-    fake_response.json.return_value = {"hourly": hourly}
-    fake_response.raise_for_status = MagicMock()
-
     with patch("scripts.download_open_meteo.OUTPUT_DIR", str(tmp_path)):
-        with patch("requests.get", return_value=fake_response):
-            path = download_open_meteo_land(
-                year=2024, month=7,
+        with patch("requests.get", side_effect=_monthly_response(hourly)):
+            paths = [download_open_meteo_land(
+                year=2024, month=month,
                 area={"west": 18.0, "east": 18.2, "south": 59.2, "north": 59.4},
-            )
+            ) for month in (7, 8)]
 
     snapped_lat, snapped_lon = _snap_to_era5_grid(
         {"west": 18.0, "east": 18.2, "south": 59.2, "north": 59.4}
@@ -381,15 +385,17 @@ def test_openmeteo_profile_end_to_end_pass(tmp_path):
 
     profile = load_metafilter_parameters(FILTERS_DIR / "sentinel2_openmeteo.json")
     df = calculate_daily_metrics(
-        path,
+        paths,
         area=snapped_area,
         sensor=profile["sensor"],
         overpass_time_utc=profile["overpass_time_utc"],
     )
     filtered, _ = apply_metafilter(df, profile)
+    assert len(df) == 62
+    assert df.date.iloc[-1] == "2024-08-31"
 
     selected = filtered.loc[filtered["selected"], "date"].tolist()
-    # Days late August (after dry spell + ramp-up of GDD) should pass
+    # August days after the dry spell and GDD warmup should pass.
     assert any(d.startswith("2024-08") for d in selected), (
         f"Expected some August days to pass; got: {selected}"
     )
@@ -398,21 +404,17 @@ def test_openmeteo_profile_end_to_end_pass(tmp_path):
 def test_openmeteo_profile_excludes_cloudy_days(tmp_path):
     """High-cloud fixture should produce zero selected days under the
     sentinel2_openmeteo.json profile."""
-    hourly = _build_om_hourly(start="2024-07-15", n_days=45)
+    hourly = _build_om_hourly(start="2024-07-01", n_days=63)
     # Crank cloud cover up to 80%
     hourly["cloud_cover"] = [80.0] * len(hourly["time"])
     hourly["cloud_cover_low"] = [70.0] * len(hourly["time"])
 
-    fake_response = MagicMock()
-    fake_response.json.return_value = {"hourly": hourly}
-    fake_response.raise_for_status = MagicMock()
-
     with patch("scripts.download_open_meteo.OUTPUT_DIR", str(tmp_path)):
-        with patch("requests.get", return_value=fake_response):
-            path = download_open_meteo_land(
-                year=2024, month=7,
+        with patch("requests.get", side_effect=_monthly_response(hourly)):
+            paths = [download_open_meteo_land(
+                year=2024, month=month,
                 area={"west": 18.0, "east": 18.2, "south": 59.2, "north": 59.4},
-            )
+            ) for month in (7, 8)]
 
     snapped_lat, snapped_lon = _snap_to_era5_grid(
         {"west": 18.0, "east": 18.2, "south": 59.2, "north": 59.4}
@@ -424,12 +426,14 @@ def test_openmeteo_profile_excludes_cloudy_days(tmp_path):
 
     profile = load_metafilter_parameters(FILTERS_DIR / "sentinel2_openmeteo.json")
     df = calculate_daily_metrics(
-        path,
+        paths,
         area=snapped_area,
         sensor=profile["sensor"],
         overpass_time_utc=profile["overpass_time_utc"],
     )
     filtered, _ = apply_metafilter(df, profile)
+    assert len(df) == 62
+    assert df.date.iloc[-1] == "2024-08-31"
 
     selected = filtered.loc[filtered["selected"], "date"].tolist()
     assert selected == [], f"Expected no days to pass with 80% cloud, got {selected}"

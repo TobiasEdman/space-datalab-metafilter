@@ -119,7 +119,7 @@ def test_fetch_daily_meteorology_caches_months(tmp_path):
     def fake_fetch(year, month, **kwargs):
         month_times = pd.date_range(
             f"{year}-{month:02d}-01",
-            periods=24 * pd.Period(f"{year}-{month:02d}").days_in_month,
+            periods=24 * pd.Period(f"{year}-{month:02d}").days_in_month + 1,
             freq="h",
         )
         n = len(month_times)
@@ -164,7 +164,7 @@ def test_fetch_daily_meteorology_replaces_corrupt_cache(tmp_path):
     corrupt.write_bytes(b"not a netcdf file")
 
     def fake_fetch(year, month, **kwargs):
-        times = pd.date_range("2019-05-01", periods=24 * 31, freq="h")
+        times = pd.date_range("2019-05-01", periods=24 * 31 + 1, freq="h")
         hourly = {
             "time": times.strftime("%Y-%m-%dT%H:%M").tolist(),
             "temperature_2m": [10.0] * len(times),
@@ -191,7 +191,7 @@ def test_fetch_daily_meteorology_serializes_same_cache_entry(tmp_path):
     bbox = {"west": 18.0, "south": 59.2, "east": 18.2, "north": 59.4}
 
     def fake_fetch(year, month, **kwargs):
-        times = pd.date_range("2019-05-01", periods=24 * 31, freq="h")
+        times = pd.date_range("2019-05-01", periods=24 * 31 + 1, freq="h")
         hourly = {
             "time": times.strftime("%Y-%m-%dT%H:%M").tolist(),
             "temperature_2m": [10.0] * len(times),

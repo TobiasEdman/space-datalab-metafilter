@@ -214,6 +214,16 @@ configured cache directory, keyed by the pinned `era5_land` reanalysis
 model; caches written before the pin (Open-Meteo's *Best Match* blend) are
 ignored and refetched. Hourly values from both backends cover the hour
 ending at their stamp; CDS ERA5-Land running totals are converted on read.
+Both monthly downloaders include the following midnight so the final day's
+rainfall and radiation totals cover all 24 hours. This boundary sample does
+not add a date to the daily results. Older Open-Meteo caches without it are
+refetched. Incomplete daily totals remain missing and fail rules using those
+metrics; rainfall lookbacks preserve missing days rather than treating them
+as dry. The first 24/48-hour lookbacks also remain missing until enough prior
+days are available. A missing day makes the dry streak unknown until the next
+observed wet day resets it.
+Transient gaps in any observed grid cell invalidate that day's area total;
+cells masked throughout the input period are excluded from the area average.
 Installed commands are
 `metafilter-process-era5` and `metafilter-download-open-meteo`; run either
 with `--help` for its inputs and options. Repository scripts remain available

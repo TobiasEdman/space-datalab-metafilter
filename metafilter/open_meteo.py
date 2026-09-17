@@ -133,7 +133,7 @@ def fetch_open_meteo_archive(
     variables=None,
     timeout=60,
 ):
-    """Hit the Open-Meteo Historical Archive endpoint for one month + AOI.
+    """Fetch a month plus the following midnight, completing its last day.
 
     Returns the parsed JSON 'hourly' block. Pure HTTP — no NetCDF I/O — so
     this function is straightforward to mock in tests.
@@ -146,7 +146,10 @@ def fetch_open_meteo_archive(
     lat, lon = _snap_to_era5_grid(area)
     last_day = calendar.monthrange(year, month)[1]
     start_date = f"{year}-{month:02d}-01"
-    end_date = f"{year}-{month:02d}-{last_day:02d}"
+    boundary = pd.Timestamp(year=year, month=month, day=last_day) + pd.Timedelta(days=1)
+    # The API accepts dates, so request the following day and retain only
+    # its 00:00 sample (the hour ending the requested month's final day).
+    end_date = boundary.strftime("%Y-%m-%d")
 
     response = requests.get(
         "https://archive-api.open-meteo.com/v1/archive",
@@ -167,7 +170,11 @@ def fetch_open_meteo_archive(
         raise RuntimeError(
             f"Open-Meteo response did not contain 'hourly' block: keys={list(payload.keys())}"
         )
-    return payload["hourly"], lat, lon
+    hourly = payload["hourly"]
+    keep = pd.to_datetime(hourly["time"]) <= boundary
+    hourly = {name: [value for value, include in zip(values, keep) if include]
+              for name, values in hourly.items()}
+    return hourly, lat, lon
 
 
 def download_open_meteo_land(

@@ -197,9 +197,7 @@ def _open_and_concat(file_paths):
                 ds = ds.rename({"valid_time": "time"})
             datasets.append(ds.load())
 
-    if len(datasets) == 1:
-        return datasets[0]
-    combined = xr.concat(datasets, dim="time")
+    combined = datasets[0] if len(datasets) == 1 else xr.concat(datasets, dim="time")
     return combined.sortby("time").drop_duplicates(dim="time")
 
 
@@ -217,18 +215,22 @@ def _hourly_increments(var):
     return increments.where(hours != 1, var)
 
 
-def _daily_sum(hourly, spatial):
+def _daily_sum(hourly, spatial, *, active_cells):
     """Sum hour-ending increments per calendar day.
 
     A value stamped 00:00 is the last hour of the previous day, so the series
-    is moved back one hour before resampling. A day with no data is NaN, not
-    0; a day missing its final hour (the last day of a CDS file) is the sum
-    of what it has.
+    is moved back one hour before resampling. All 24 hourly values must be
+    present; incomplete days remain NaN rather than becoming partial totals.
     """
     shifted = hourly.assign_coords(time=hourly["time"] - pd.Timedelta(hours=1))
-    daily = shifted.resample(time="1D").sum(min_count=1)
+    daily = shifted.resample(time="1D").sum(min_count=24)
     if spatial:
-        daily = daily.mean(dim=spatial, skipna=True)
+        # Ignore permanently masked cells, but never silently drop a cell
+        # with a transient gap from the AOI mean (it may be the wet cell).
+        # Activity comes from raw observations: differencing can erase an
+        # isolated cumulative reading when its predecessor is missing.
+        incomplete = (shifted.resample(time="1D").count() < 24) & active_cells
+        daily = daily.mean(dim=spatial, skipna=True).where(~incomplete.any(dim=spatial))
     return daily
 
 
@@ -302,11 +304,6 @@ def calculate_daily_metrics(
 
     spatial = tuple(d for d in ("latitude", "longitude") if d in dataset.dims)
 
-    daily_time_index = pd.to_datetime(
-        dataset["time"].resample(time="1D").mean()["time"].values
-    )
-    df = pd.DataFrame({"date": daily_time_index.strftime("%Y-%m-%d")})
-
     accumulation = dataset.attrs.get(ACCUMULATION_ATTR, ACCUMULATION_FORECAST_START)
     if accumulation not in (ACCUMULATION_FORECAST_START, ACCUMULATION_HOURLY):
         raise MetafilterConfigurationError(
@@ -314,8 +311,21 @@ def calculate_daily_metrics(
             f"{ACCUMULATION_FORECAST_START!r} or {ACCUMULATION_HOURLY!r}."
         )
 
+    # A lone trailing midnight completes yesterday's accumulations. It is
+    # not a new day of temperature/cloud observations or a selectable date.
+    accumulation_dataset = dataset
+    last = pd.Timestamp(dataset["time"].values[-1])
+    if last == last.normalize():
+        dataset = dataset.isel(time=slice(None, -1))
+    if dataset.sizes["time"] == 0:
+        raise MetafilterSelectionError("ERA5 contains only a boundary sample, no daily observations")
+    daily_time_index = pd.to_datetime(
+        dataset["time"].resample(time="1D").mean()["time"].values
+    )
+    df = pd.DataFrame({"date": daily_time_index.strftime("%Y-%m-%d")})
+
     def hourly_increments(name):
-        var = dataset[name]
+        var = accumulation_dataset[name]
         if accumulation == ACCUMULATION_FORECAST_START:
             var = _hourly_increments(var)
         return var
@@ -340,18 +350,20 @@ def calculate_daily_metrics(
 
     # ── Precipitation + lookbacks ─────────────────────────────────────
     if "tp" in dataset:
-        precip = _daily_sum(hourly_increments("tp") * 1000.0, spatial)
+        precip = _daily_sum(
+            hourly_increments("tp") * 1000.0, spatial,
+            active_cells=accumulation_dataset["tp"].notnull().any(dim="time"),
+        )
         df["total_precip_mm"] = align_daily(precip)
         # Short lookbacks
         df["precip_prev24h_mm"] = (
-            pd.Series(df["total_precip_mm"]).shift(1).fillna(0).values
+            df["total_precip_mm"].shift(1).values
         )
         df["precip_prev48h_mm"] = (
             pd.Series(df["total_precip_mm"])
-            .rolling(2, min_periods=1)
+            .rolling(2, min_periods=2)
             .sum()
             .shift(1)
-            .fillna(0)
             .values
         )
         # Long lookbacks — phenological + atmospheric context
@@ -370,13 +382,24 @@ def calculate_daily_metrics(
             .values
         )
         # Dry streak: consecutive dry days ending yesterday
-        precip_prev = pd.Series(df["total_precip_mm"]).shift(1).fillna(0)
-        is_wet = (precip_prev >= 0.5).astype(int)
-        df["dry_streak_days"] = is_wet.groupby(is_wet.cumsum()).cumcount().values
+        streak = 0.0
+        streaks = []
+        for rain in df["total_precip_mm"]:
+            streaks.append(streak)
+            if pd.isna(rain):
+                streak = float("nan")
+            elif rain >= 0.5:
+                streak = 0.0
+            else:
+                streak += 1
+        df["dry_streak_days"] = streaks
 
     # ── Solar radiation ───────────────────────────────────────────────
     if "ssrd" in dataset:
-        ssrd_daily_mj = align_daily(_daily_sum(hourly_increments("ssrd"), spatial) / 1e6)
+        ssrd_daily_mj = align_daily(_daily_sum(
+            hourly_increments("ssrd"), spatial,
+            active_cells=accumulation_dataset["ssrd"].notnull().any(dim="time"),
+        ) / 1e6)
         df["ssrd_mj_m2"] = ssrd_daily_mj
         df["ssrd_prev30d_mj_m2"] = (
             pd.Series(ssrd_daily_mj).rolling(30, min_periods=30).sum().shift(1).values

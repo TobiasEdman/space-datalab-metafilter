@@ -13,7 +13,7 @@ BBOX = {"west": 18.0, "south": 59.2, "east": 18.2, "north": 59.4}
 
 
 def _month_dataset(year=2024, month=8, **attrs):
-    hours = calendar.monthrange(year, month)[1] * 24
+    hours = calendar.monthrange(year, month)[1] * 24 + 1
     times = pd.date_range(f"{year}-{month:02d}-01", periods=hours, freq="h")
     shape = (hours, 1, 1)
     data = {

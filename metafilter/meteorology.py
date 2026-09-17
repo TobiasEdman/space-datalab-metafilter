@@ -135,7 +135,9 @@ def _valid_cache(path: Path, year: int, month: int) -> bool:
             times = pd.DatetimeIndex(dataset["time"].values)
             expected_times = pd.date_range(
                 start=pd.Timestamp(year=year, month=month, day=1),
-                periods=calendar.monthrange(year, month)[1] * 24,
+                # The following 00:00 sample completes month-end sums.
+                # Older caches lacking it are refetched automatically.
+                periods=calendar.monthrange(year, month)[1] * 24 + 1,
                 freq="h",
             )
             return (
