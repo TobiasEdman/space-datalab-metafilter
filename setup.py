@@ -13,7 +13,7 @@ setup(
         "numpy>=1.24",
         "pandas>=2.0",
         "requests>=2.33.1,<3",
-        "h5netcdf>=1.4,<2",
+        "h5netcdf[h5py]>=1.4,<2",
         "cftime>=1.6,<2",
         "scipy>=1.10",
         "xarray>=2023.1",
