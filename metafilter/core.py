@@ -195,6 +195,14 @@ def _open_and_concat(file_paths):
             ds = opened
             if "valid_time" in ds.coords or "valid_time" in ds.dims:
                 ds = ds.rename({"valid_time": "time"})
+            # Per file, never after concatenation: a cache written before the
+            # `sde` correction carries `sd`, and concatenating it with a newer
+            # file yields both variables, each missing outside its own months.
+            # Selecting one globally would drop the other file's observations.
+            # A file that already has `sde` keeps it and its `sd` is left
+            # alone, since `sd` elsewhere in ERA5 is snow water equivalent.
+            if "sde" not in ds.data_vars and "sd" in ds.data_vars:
+                ds = ds.rename({"sd": "sde"})
             datasets.append(ds.load())
 
     combined = datasets[0] if len(datasets) == 1 else xr.concat(datasets, dim="time")
@@ -445,10 +453,10 @@ def calculate_daily_metrics(
     # metres) - verified against the live API 2026-09-18. `sd` is ERA5's snow
     # *water equivalent* elsewhere, and the spelling Open-Meteo caches written
     # before this fix carry, so it is accepted second and never preferred.
-    snow_depth_var = next((name for name in ("sde", "sd") if name in dataset), None)
-    if snow_depth_var is not None:
+    # `_open_and_concat` has already mapped the legacy `sd` spelling per file.
+    if "sde" in dataset:
         df["snow_depth_mean_m"] = (
-            dataset[snow_depth_var].resample(time="1D").mean()
+            dataset["sde"].resample(time="1D").mean()
             .mean(dim=spatial, skipna=True).values
         )
 

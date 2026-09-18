@@ -156,7 +156,7 @@ reference whichever column they need; unused columns cost nothing.
 | `skt_mean_c`, `skt_min_c`, `skt_at_pass_c` | `skt` | Pass-time sampling uses `overpass_time_utc` |
 | `stl1_mean_c` | `stl1` | Soil temperature layer 1 |
 | `swvl1_mean`, `swvl1_delta_prev2d`, `swvl1_prev30d_mean` | `swvl1` | Surface soil moisture + 2-day delta + 30-day baseline |
-| `snow_depth_mean_m` | `sd` | Daily mean snow depth |
+| `snow_depth_mean_m` | `sde` | Daily mean snow depth. CDS ERA5-Land returns `snow_depth` as `sde`; caches written before v0.1.1 carry `sd` and are mapped on read, per file. ERA5's `sd` elsewhere is snow *water equivalent* and is never used to fill a missing `sde`. |
 | `tcc_mean_overpass`, `lcc_mean_overpass` | `tcc`, `lcc` from ERA5 single-levels | Sampled at `overpass_time_utc` |
 
 ### Auto-fetching dependent inputs
