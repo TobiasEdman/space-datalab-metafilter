@@ -65,7 +65,9 @@ OPEN_METEO_DEFAULT_HOURLY = [
 #     J/m² (accumulated over the hour). For a constant-W reading, J/m² = W * 3600 s.
 #   * cloud_cover, cloud_cover_low: Open-Meteo gives percentage 0–100,
 #     ERA5 single-levels gives fraction 0–1.
-#   * soil_moisture/snow_depth: same units (m³/m³, m respectively).
+#   * soil_moisture/snow_depth: same units (m³/m³, m respectively). Snow depth
+#     is emitted as `sde`, the name CDS ERA5-Land uses, so both backends agree;
+#     caches written before this carry `sd` and are still read.
 #   * soil_temperature: Open-Meteo °C, ERA5-Land Kelvin.
 _VAR_MAPPING = {
     "temperature_2m":             ("t2m",   lambda v: v + 273.15),
@@ -75,7 +77,7 @@ _VAR_MAPPING = {
     "cloud_cover_low":            ("lcc",   lambda v: v / 100.0),
     "soil_temperature_0_to_7cm":  ("stl1",  lambda v: v + 273.15),
     "soil_moisture_0_to_7cm":     ("swvl1", lambda v: v),
-    "snow_depth":                 ("sd",    lambda v: v),
+    "snow_depth":                 ("sde",   lambda v: v),
     "dew_point_2m":               ("d2m",   lambda v: v + 273.15),
 }
 

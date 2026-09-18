@@ -441,9 +441,15 @@ def calculate_daily_metrics(
             pd.Series(swvl1_daily).rolling(30, min_periods=30).mean().shift(1).values
         )
 
-    if "sd" in dataset:  # snow_depth in metres
+    # CDS `reanalysis-era5-land` returns `snow_depth` as `sde` (snow depth in
+    # metres) - verified against the live API 2026-09-18. `sd` is ERA5's snow
+    # *water equivalent* elsewhere, and the spelling Open-Meteo caches written
+    # before this fix carry, so it is accepted second and never preferred.
+    snow_depth_var = next((name for name in ("sde", "sd") if name in dataset), None)
+    if snow_depth_var is not None:
         df["snow_depth_mean_m"] = (
-            dataset["sd"].resample(time="1D").mean().mean(dim=spatial, skipna=True).values
+            dataset[snow_depth_var].resample(time="1D").mean()
+            .mean(dim=spatial, skipna=True).values
         )
 
     # ── Cloud cover when present in the same dataset ──────────────────
