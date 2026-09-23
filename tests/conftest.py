@@ -158,12 +158,14 @@ def make_era5_land_dataset(
         skt = np.broadcast_to(cycle[:, None, None], (n_t, n_la, n_lo)).astype(np.float32).copy()
         data_vars["skt"] = (("time", "latitude", "longitude"), skt)
 
+    # `sde` is what CDS ERA5-Land delivers for snow_depth; the fixtures carry
+    # that spelling so the suite exercises the real shape.
     if sd_pattern == "snow":
-        sd = np.full((n_t, n_la, n_lo), 0.10, dtype=np.float32)  # 10 cm
-        data_vars["sd"] = (("time", "latitude", "longitude"), sd)
+        sde = np.full((n_t, n_la, n_lo), 0.10, dtype=np.float32)  # 10 cm
+        data_vars["sde"] = (("time", "latitude", "longitude"), sde)
     elif sd_pattern == "no_snow":
-        sd = np.zeros((n_t, n_la, n_lo), dtype=np.float32)
-        data_vars["sd"] = (("time", "latitude", "longitude"), sd)
+        sde = np.zeros((n_t, n_la, n_lo), dtype=np.float32)
+        data_vars["sde"] = (("time", "latitude", "longitude"), sde)
 
     if ssrd_pattern == "summer":
         # Sinusoidal day-night cycle, peak at noon. Amplitude chosen so the
