@@ -11,8 +11,8 @@ formuleringen är avsiktligt smal och ska inte växa utan att mätningen växer.
 
 Hej [namn],
 
-Vi har paketerat om metafiltret från Space Data Lab 3.0 till ett installerbart
-Python-bibliotek och släppt en första version. Idén är densamma som tidigare:
+Vi har paketerat om metafiltret vi tog fram tillsammans i Space Data Lab 3.0
+till ett installerbart Python-bibliotek och släppt en första version. Idén är densamma som tidigare:
 använda meteorologiska metadata för att avgöra när det är värt att leta efter
 Sentinel-2-bilder, i stället för att hämta allt och sortera bort efteråt.
 
@@ -46,9 +46,9 @@ Tobias
 
 ## Varianter
 
-**Till DES-teamet** — lägg till en mening om att detta är en fork av deras repo
-och att ändringarna gärna går uppströms om de vill ha dem. Det är hövligt och
-öppnar för samarbete i stället för att se ut som en avknoppning.
+**Till någon utanför SDL3** — första stycket förutsätter att mottagaren varit
+med. Byt det mot en mening som står på egna ben: vad biblioteket gör och att
+det kom ur Space Data Lab 3.0.
 
 **Till någon som bara ska veta att det finns** — stryk allt från *"Om vad som
 faktiskt är verifierat"* till och med länken, och behåll rubrik, första stycket
