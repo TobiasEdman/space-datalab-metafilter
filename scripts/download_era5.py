@@ -142,9 +142,16 @@ def lookback_days_needed(filter_path):
     The span is read from the column name, so a profile can introduce a window
     the downloader has never seen and still get enough history.
     """
-    columns = [rule.get("metric_column", "") for rule in _rules_from_filter(filter_path).values()]
+    columns = [
+        rule.get("metric_column")
+        for rule in _rules_from_filter(filter_path).values()
+        if isinstance(rule, dict)
+    ]
     named = lookback_days(columns)
-    unbounded = max((_UNBOUNDED_LOOKBACK_DAYS.get(c, 0) for c in columns), default=0)
+    unbounded = max(
+        (_UNBOUNDED_LOOKBACK_DAYS.get(c, 0) for c in columns if isinstance(c, str)),
+        default=0,
+    )
     return max(named, unbounded)
 
 

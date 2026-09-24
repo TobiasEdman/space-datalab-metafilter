@@ -157,6 +157,8 @@ def parse_lookback(column):
     for the short spans; they must be whole days, since the underlying series
     is daily.
     """
+    if not isinstance(column, str):
+        return None
     match = _LOOKBACK_PATTERN.match(column)
     if match is None:
         return None
@@ -737,9 +739,9 @@ def process_era5_data(
     # defaults so a rule never meets a missing column, and the frame keeps
     # the columns other callers already rely on.
     requested = [
-        rule.get("metric_column", "")
+        rule["metric_column"]
         for rule in normalized.get("rules", {}).values()
-        if isinstance(rule, dict)
+        if isinstance(rule, dict) and isinstance(rule.get("metric_column"), str)
     ]
     lookbacks = list(DEFAULT_LOOKBACK_COLUMNS)
     lookbacks += [
