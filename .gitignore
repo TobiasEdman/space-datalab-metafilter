@@ -1,5 +1,6 @@
 log.org
-#log.org#
+\#log.org\#
+\#*\#
 ./log.org
 source_cat.py
 ./source_cat.py
