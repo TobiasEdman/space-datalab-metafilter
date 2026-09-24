@@ -422,7 +422,8 @@ When reading `error_days`, keep in mind that the baseline currently queries ever
 ```plaintext
 .
 ├── README.md                  # Project overview (this file)
-├── license.txt                # APACHE 2.0 license and copyright notice
+├── LICENSE                     # Full Apache 2.0 license text
+├── NOTICE                      # Copyright and attribution
 ├── data/                      # Stores ERA5 and Sentinel data
 │   ├── era5/                  # ERA5-Land weather data
 │   └── sentinel/              # Placeholder for Sentinel imagery (if downloaded)
@@ -462,4 +463,4 @@ For questions or issues, feel free to open an issue in the repository.
 
 ## Licensing and Copyright
 
-All material in this repository follows the copyright and licensing as detailed in license.txt in the root directory of the repository.
+All material in this repository follows the copyright and licensing as detailed in LICENSE and NOTICE in the root directory of the repository.
