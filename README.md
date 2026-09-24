@@ -148,7 +148,8 @@ reference whichever column they need; unused columns cost nothing.
 | `freeze_flag` | `t2m` | 1 if daily minimum < 0 °C |
 | `total_precip_mm` | `tp` | Existing |
 | `precip_prev24h_mm`, `precip_prev48h_mm` | `tp` | Short lookbacks |
-| `precip_prev7d_mm`, `precip_prev30d_mm` | `tp` | Long lookbacks — needs buffer month (auto-fetched by `download_period()`) |
+| `precip_prev7d_mm`, `precip_prev30d_mm` | `tp` | Long lookbacks — buffer months auto-fetched by `download_period()`, sized to the window |
+| `precip_prev<N>d_mm`, `ssrd_prev<N>d_mj_m2`, `gdd_prev<N>d_c`, `swvl1_prev<N>d_mean` | as above | **Any** window: the span is read from the column name, so a profile naming `precip_prev14d_mm` gets a 14-day rolling sum without a code change. Hours are accepted in whole days (`prev24h`, `prev48h`). |
 | `dry_streak_days` | `tp` | Consecutive dry days ending yesterday |
 | `ssrd_mj_m2` | `ssrd` | Daily insolation in MJ/m² |
 | `ssrd_prev30d_mj_m2` | `ssrd` | 30-day rolling insolation |

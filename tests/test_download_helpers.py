@@ -39,24 +39,62 @@ def test_s2_extended_needs_cloud_and_buffer(tmp_path):
     assert long_lookback_needed(fpath) is True
 
 
-def test_s1_default_does_not_need_cloud_or_buffer(tmp_path):
-    """S1 default uses only short-window + pass-time columns."""
+def test_s1_default_needs_no_cloud_and_one_day_of_history(tmp_path):
+    """S1 default needs no cloud file, but its 24h window reaches back a day.
+
+    Without that day the first of every month has no precip_prev24h_mm and the
+    dry-canopy rule can never select it.
+    """
     import pathlib
+    from scripts.download_era5 import lookback_days_needed
     fpath = pathlib.Path(__file__).resolve().parent.parent / "filters" / "sentinel1_default.json"
     assert cloud_vars_needed(fpath) is False
-    assert long_lookback_needed(fpath) is False
+    assert lookback_days_needed(fpath) == 1
+    assert long_lookback_needed(fpath) is True
 
 
-def test_long_lookback_triggered_by_any_long_prefix(tmp_path):
-    for col in ["precip_prev7d_mm", "precip_prev30d_mm", "ssrd_prev30d_mj_m2",
-                "gdd_prev30d_c", "swvl1_prev30d_mean", "dry_streak_days"]:
-        payload = {
-            "rules": {
-                "x": {"metric_column": col, "operator": "gt", "threshold": 0.0}
-            }
-        }
-        path = _write(tmp_path, f"prof_{col}.json", payload)
-        assert long_lookback_needed(path), f"{col} did not trigger long_lookback_needed"
+def test_lookback_days_read_from_the_column_name(tmp_path):
+    """The window is whatever the name says, including spans never shipped."""
+    from scripts.download_era5 import lookback_days_needed
+    expected = {
+        "precip_prev24h_mm": 1,
+        "precip_prev48h_mm": 2,
+        "precip_prev7d_mm": 7,
+        "precip_prev14d_mm": 14,
+        "precip_prev30d_mm": 30,
+        "precip_prev45d_mm": 45,
+        "ssrd_prev30d_mj_m2": 30,
+        "gdd_prev30d_c": 30,
+        "swvl1_prev30d_mean": 30,
+        "dry_streak_days": 30,
+    }
+    for col, days in expected.items():
+        path = _write(tmp_path, f"prof_{col}.json",
+                      {"rules": {"x": {"metric_column": col, "operator": "gt", "threshold": 0.0}}})
+        assert lookback_days_needed(path) == days, col
+        assert long_lookback_needed(path) is True
+
+
+def test_column_without_a_window_needs_no_history(tmp_path):
+    from scripts.download_era5 import lookback_days_needed
+    path = _write(tmp_path, "prof_plain.json",
+                  {"rules": {"x": {"metric_column": "mean_temp_c", "operator": "gt", "threshold": 0.0}}})
+    assert lookback_days_needed(path) == 0
+    assert long_lookback_needed(path) is False
+
+
+def test_buffer_covers_the_window_across_a_short_february():
+    """A 30-day window over March needs January too: February is 28 days.
+
+    One buffer month was assumed before, so precip_prev30d_mm was missing for
+    the first two days of every March.
+    """
+    from scripts.download_era5 import buffer_months
+    assert buffer_months(2024, 3, 30) == [(2024, 1), (2024, 2)]
+    assert buffer_months(2024, 8, 30) == [(2024, 7)]
+    assert buffer_months(2024, 3, 7) == [(2024, 2)]
+    assert buffer_months(2024, 1, 30) == [(2023, 12)]
+    assert buffer_months(2024, 8, 0) == []
 
 
 def test_previous_month_normal():

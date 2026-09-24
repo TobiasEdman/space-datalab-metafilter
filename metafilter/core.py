@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 import numpy as np
@@ -115,6 +116,70 @@ def _normalize_metafilter_payload(payload):
 
 
 _ERA5_GRID_DEG = 0.25
+
+# Rolling-lookback columns are named for their window, and the name is the
+# contract: filter profiles select by it, and the downloader reads it to size
+# the buffer it must fetch. So the window is parsed out of the name rather
+# than hard-coded, and a profile can ask for any span without a code change.
+#
+#   precip_prev14d_mm  ->  14-day rolling sum of total_precip_mm
+#
+# `_LOOKBACK_STEMS` maps the stem to (source column, aggregation, suffix).
+_LOOKBACK_STEMS = {
+    "precip": ("total_precip_mm", "sum", "mm"),
+    "ssrd": ("ssrd_mj_m2", "sum", "mj_m2"),
+    "gdd": ("gdd_daily_c", "sum", "c"),
+    "swvl1": ("swvl1_mean", "mean", "mean"),
+}
+
+_LOOKBACK_PATTERN = re.compile(
+    r"^(?P<stem>" + "|".join(_LOOKBACK_STEMS) + r")_prev(?P<span>\d+)(?P<unit>[dh])_(?P<suffix>.+)$"
+)
+
+# What calculate_daily_metrics produces when the caller names nothing. These
+# are the columns the shipped profiles and AnalogModel.DEFAULT_FEATURES use,
+# so the default frame is unchanged from before windows became parseable.
+DEFAULT_LOOKBACK_COLUMNS = (
+    "precip_prev24h_mm",
+    "precip_prev48h_mm",
+    "precip_prev7d_mm",
+    "precip_prev30d_mm",
+    "ssrd_prev30d_mj_m2",
+    "gdd_prev30d_c",
+    "swvl1_prev30d_mean",
+)
+
+
+def parse_lookback(column):
+    """Return (stem, days, aggregation) for a lookback column, else None.
+
+    Hours are accepted because the shipped profiles use `prev24h`/`prev48h`
+    for the short spans; they must be whole days, since the underlying series
+    is daily.
+    """
+    match = _LOOKBACK_PATTERN.match(column)
+    if match is None:
+        return None
+    stem = match.group("stem")
+    source, aggregation, suffix = _LOOKBACK_STEMS[stem]
+    if match.group("suffix") != suffix:
+        return None
+    span = int(match.group("span"))
+    if match.group("unit") == "h":
+        if span % 24:
+            raise MetafilterConfigurationError(
+                f"lookback column {column!r} asks for {span} hours; only whole days are available."
+            )
+        span //= 24
+    if span < 1:
+        raise MetafilterConfigurationError(f"lookback column {column!r} asks for a window under one day.")
+    return stem, span, aggregation
+
+
+def lookback_days(columns):
+    """Longest window, in days, among the lookback columns in `columns`."""
+    spans = [parsed[1] for parsed in map(parse_lookback, columns) if parsed]
+    return max(spans, default=0)
 
 # Accumulation convention of the hourly source, carried as a dataset attribute.
 # CDS ERA5-Land accumulates tp/ssrd from the 00 UTC forecast start; Open-Meteo
@@ -290,6 +355,7 @@ def calculate_daily_metrics(
     sensor="sentinel-2",
     overpass_time_utc=None,
     cloud_file_path=None,
+    lookback_columns=DEFAULT_LOOKBACK_COLUMNS,
 ):
     """Compute daily aggregates for surface state and (optionally) cloud cover.
 
@@ -363,44 +429,6 @@ def calculate_daily_metrics(
             active_cells=accumulation_dataset["tp"].notnull().any(dim="time"),
         )
         df["total_precip_mm"] = align_daily(precip)
-        # Short lookbacks
-        df["precip_prev24h_mm"] = (
-            df["total_precip_mm"].shift(1).values
-        )
-        df["precip_prev48h_mm"] = (
-            pd.Series(df["total_precip_mm"])
-            .rolling(2, min_periods=2)
-            .sum()
-            .shift(1)
-            .values
-        )
-        # Long lookbacks — phenological + atmospheric context
-        df["precip_prev7d_mm"] = (
-            pd.Series(df["total_precip_mm"])
-            .rolling(7, min_periods=7)
-            .sum()
-            .shift(1)
-            .values
-        )
-        df["precip_prev30d_mm"] = (
-            pd.Series(df["total_precip_mm"])
-            .rolling(30, min_periods=30)
-            .sum()
-            .shift(1)
-            .values
-        )
-        # Dry streak: consecutive dry days ending yesterday
-        streak = 0.0
-        streaks = []
-        for rain in df["total_precip_mm"]:
-            streaks.append(streak)
-            if pd.isna(rain):
-                streak = float("nan")
-            elif rain >= 0.5:
-                streak = 0.0
-            else:
-                streak += 1
-        df["dry_streak_days"] = streaks
 
     # ── Solar radiation ───────────────────────────────────────────────
     if "ssrd" in dataset:
@@ -409,16 +437,11 @@ def calculate_daily_metrics(
             active_cells=accumulation_dataset["ssrd"].notnull().any(dim="time"),
         ) / 1e6)
         df["ssrd_mj_m2"] = ssrd_daily_mj
-        df["ssrd_prev30d_mj_m2"] = (
-            pd.Series(ssrd_daily_mj).rolling(30, min_periods=30).sum().shift(1).values
-        )
 
     # ── GDD accumulation (requires mean_temp_c) ───────────────────────
     if "mean_temp_c" in df.columns:
-        gdd_daily = (df["mean_temp_c"].clip(lower=5) - 5).fillna(0)
-        df["gdd_prev30d_c"] = (
-            gdd_daily.rolling(30, min_periods=30).sum().shift(1).values
-        )
+        # Kept out of the returned frame; it exists only to feed gdd_prev*_c.
+        gdd_source = (df["mean_temp_c"].clip(lower=5) - 5).fillna(0)
 
     # ── Surface state (S1-relevant, but cheap to always compute) ──────
     if "skt" in dataset:
@@ -445,9 +468,6 @@ def calculate_daily_metrics(
         df["swvl1_delta_prev2d"] = (
             pd.Series(swvl1_daily) - pd.Series(swvl1_daily).shift(2)
         ).fillna(0).values
-        df["swvl1_prev30d_mean"] = (
-            pd.Series(swvl1_daily).rolling(30, min_periods=30).mean().shift(1).values
-        )
 
     # CDS `reanalysis-era5-land` returns `snow_depth` as `sde` (snow depth in
     # metres) - verified against the live API 2026-09-18. `sd` is ERA5's snow
@@ -459,6 +479,46 @@ def calculate_daily_metrics(
             dataset["sde"].resample(time="1D").mean()
             .mean(dim=spatial, skipna=True).values
         )
+
+    # ── Rolling lookbacks, one per requested column ───────────────────
+    # Every window is a shifted rolling aggregate of a daily series, so the
+    # only thing that varies is the span. `min_periods` equals the span: a
+    # partially covered window stays missing rather than reporting a total
+    # over fewer days than it claims.
+    sources = {"gdd": locals().get("gdd_source")}
+    for column in lookback_columns:
+        parsed = parse_lookback(column)
+        if parsed is None:
+            raise MetafilterConfigurationError(
+                f"{column!r} is not a recognised lookback column; expected "
+                f"<{'|'.join(_LOOKBACK_STEMS)}>_prev<N>d_<suffix>."
+            )
+        stem, span, aggregation = parsed
+        source_name = _LOOKBACK_STEMS[stem][0]
+        series = sources.get(stem)
+        if series is None:
+            if source_name not in df.columns:
+                continue  # the input lacks the variable this window needs
+            series = df[source_name]
+        rolling = pd.Series(series.values if hasattr(series, "values") else series).rolling(
+            span, min_periods=span
+        )
+        aggregated = rolling.sum() if aggregation == "sum" else rolling.mean()
+        df[column] = aggregated.shift(1).values
+
+    # Dry streak: consecutive dry days ending yesterday
+    if "total_precip_mm" in df.columns:
+        streak = 0.0
+        streaks = []
+        for rain in df["total_precip_mm"]:
+            streaks.append(streak)
+            if pd.isna(rain):
+                streak = float("nan")
+            elif rain >= 0.5:
+                streak = 0.0
+            else:
+                streak += 1
+        df["dry_streak_days"] = streaks
 
     # ── Cloud cover when present in the same dataset ──────────────────
     # The CDS path delivers tcc/lcc in a separate `reanalysis-era5-single-levels`
@@ -673,6 +733,19 @@ def process_era5_data(
     overpass = normalized.get(
         "overpass_time_utc", DEFAULT_OVERPASS_TIME_UTC.get(sensor, "10:30")
     )
+    # A profile may name any window it likes; compute those on top of the
+    # defaults so a rule never meets a missing column, and the frame keeps
+    # the columns other callers already rely on.
+    requested = [
+        rule.get("metric_column", "")
+        for rule in normalized.get("rules", {}).values()
+        if isinstance(rule, dict)
+    ]
+    lookbacks = list(DEFAULT_LOOKBACK_COLUMNS)
+    lookbacks += [
+        column for column in requested
+        if parse_lookback(column) and column not in lookbacks
+    ]
 
     daily_metrics = calculate_daily_metrics(
         file_path,
@@ -680,6 +753,7 @@ def process_era5_data(
         sensor=sensor,
         overpass_time_utc=overpass,
         cloud_file_path=cloud_file_path,
+        lookback_columns=lookbacks,
     )
     filtered_metrics, rule_summaries = apply_metafilter(daily_metrics, normalized)
 
