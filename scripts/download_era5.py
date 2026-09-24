@@ -34,7 +34,7 @@ from tempfile import TemporaryDirectory
 
 import pandas as pd
 
-from metafilter.core import LEGACY_RULE_DEFAULTS, _open_and_concat
+from metafilter.core import LEGACY_RULE_DEFAULTS, _open_and_concat, lookback_days
 from utils.config import AREA, OUTPUT_DIR
 
 
@@ -70,14 +70,6 @@ _METRIC_SOURCE_VARIABLES = (
     (("snow_depth_",), "snow_depth"),
 )
 
-_LONG_LOOKBACK_PREFIXES = (
-    "precip_prev7d_",
-    "precip_prev30d_",
-    "ssrd_prev30d_",
-    "gdd_prev30d_",
-    "swvl1_prev30d_",
-    "dry_streak_",
-)
 
 def _load_filter_cfg(filter_path):
     """Return the raw filter file as a dict (may be legacy flat or new schema)."""
@@ -137,13 +129,53 @@ def era5_land_variables_for_filter(filter_path):
     return [variable for variable in ERA5_LAND_VARIABLES if variable in needed]
 
 
-def long_lookback_needed(filter_path):
-    """True if any active rule needs ≥7 days of trailing data (requires buffer month)."""
-    rules = _rules_from_filter(filter_path)
-    return any(
-        any(rule.get("metric_column", "").startswith(p) for p in _LONG_LOOKBACK_PREFIXES)
-        for rule in rules.values()
+# dry_streak_days carries no window in its name: the streak is unbounded and
+# simply runs back as far as the data goes. Without history it restarts at
+# zero on the first of every month and understates every streak that crosses
+# the boundary, so it asks for the month of context it has always been given.
+_UNBOUNDED_LOOKBACK_DAYS = {"dry_streak_days": 30}
+
+
+def lookback_days_needed(filter_path):
+    """Longest span of trailing data, in days, that the profile's rules need.
+
+    The span is read from the column name, so a profile can introduce a window
+    the downloader has never seen and still get enough history.
+    """
+    columns = [
+        rule.get("metric_column")
+        for rule in _rules_from_filter(filter_path).values()
+        if isinstance(rule, dict)
+    ]
+    named = lookback_days(columns)
+    unbounded = max(
+        (_UNBOUNDED_LOOKBACK_DAYS.get(c, 0) for c in columns if isinstance(c, str)),
+        default=0,
     )
+    return max(named, unbounded)
+
+
+def long_lookback_needed(filter_path):
+    """True if the profile needs trailing data from before the requested month."""
+    return lookback_days_needed(filter_path) > 0
+
+
+def buffer_months(year, month, days_needed):
+    """Preceding months to fetch so `days_needed` of history precede day one.
+
+    One month was assumed before, which silently fell short whenever the
+    preceding month was shorter than the window: a 30-day window over March
+    saw only February's 28 days, leaving the column missing for the first two
+    days of every March.
+    """
+    months = []
+    covered = 0
+    cursor = (year, month)
+    while covered < days_needed:
+        cursor = _previous_month(*cursor)
+        months.insert(0, cursor)
+        covered += calendar.monthrange(*cursor)[1]
+    return months
 
 
 def _previous_month(year, month):
@@ -262,9 +294,8 @@ def download_period(year, month, filter_path, area=None, variables=None):
     `calculate_daily_metrics(file_path=...)` and `cloud_file_path=...` — both
     accept a list and concatenate along the time axis.
     """
-    months_to_fetch = [(year, month)]
-    if long_lookback_needed(filter_path):
-        months_to_fetch.insert(0, _previous_month(year, month))
+    months_to_fetch = buffer_months(year, month, lookback_days_needed(filter_path))
+    months_to_fetch.append((year, month))
 
     backend = backend_for_filter(filter_path)
     if backend == "open-meteo":
