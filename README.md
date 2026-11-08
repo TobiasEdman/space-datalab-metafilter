@@ -99,6 +99,17 @@ python main.py
 
 ---
 
+## Running the Tests
+
+The tests build small synthetic ERA5-Land files, so they need neither CDS nor openEO access:
+
+```bash
+pip install -r requirements.txt pytest
+python -m pytest -W error tests/
+```
+
+---
+
 ## Output
 
 - **Console Output**:
